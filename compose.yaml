@@ -3,7 +3,7 @@ services:
     image: shenlun-studio:local
     build: .
     ports:
-      - "127.0.0.1:${APP_PORT:-8080}:8000"
+      - "127.0.0.1:${APP_PORT:-18086}:8000"
     volumes:
       - shenlun-data:/data
     environment:

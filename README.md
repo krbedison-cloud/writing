@@ -10,9 +10,9 @@
 curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh | bash
 ```
 
-安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.1` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
+安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.2` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
 
-配置保存在 `~/shenlun-studio/.env`，程序只监听本机 `8080` 端口；数据使用 Docker 数据卷 `shenlun-studio-data`。安装脚本会输出实际访问地址和停止命令。重复运行安装命令不会覆盖已有 `.env`；如版本配置文件已有人工修改，会停止而不是覆盖。发布的新版本可以通过再次执行安装命令更新，既有数据保留。
+配置保存在 `~/shenlun-studio/.env`，程序只监听本机 `18086` 端口；数据使用 Docker 数据卷 `shenlun-studio-data`。安装脚本会输出实际访问地址和停止命令。重复运行安装命令不会覆盖已有 `.env`；如版本配置文件已有人工修改，会停止而不是覆盖。发布的新版本可以通过再次执行安装命令更新，既有数据保留。
 
 不希望通过管道执行脚本时，可先下载并查看再执行：
 
@@ -20,6 +20,14 @@ curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/instal
 curl -fL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh -o install-shenlun.sh
 bash install-shenlun.sh
 ```
+
+已有安装或需要指定端口时，执行下面命令，仅更新端口并保留其他配置、密钥和数据：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh | SHENLUN_PORT=18086 bash
+```
+
+也可把 `18086` 换为其他 1–65535 的空闲端口。未指定 `SHENLUN_PORT` 时，已有 `.env` 的端口保持原值；全新安装默认使用 `18086`。
 
 使用自定义安装目录：
 
@@ -31,7 +39,7 @@ SHENLUN_DIR="$HOME/Applications/shenlun-studio" bash install-shenlun.sh
 公开镜像可直接拉取：
 
 ```bash
-docker pull ghcr.io/krbedison-cloud/writing:v0.1.1
+docker pull ghcr.io/krbedison-cloud/writing:v0.1.2
 ```
 
 GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架构镜像并创建对应标签的 Release。发布新版本时同步更新 VERSION、安装脚本默认版本与部署配置。GHCR 首次创建的包可能是私有的；仓库拥有者可到 GitHub 的 Packages → writing → Package settings 将包设为 Public，之后无需登录即可拉取。即使没有更改包的可见性，上面的安装器仍能使用公开 Release 中的预构建 Docker 镜像完成安装，不必登录 GHCR。
@@ -45,7 +53,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-在 Mac 浏览器打开 `http://localhost:8080`。默认仅监听本机，Apple Silicon（M 系列，arm64）和 Intel（amd64）使用同一份配置，无需指定 `platform`。应用本身建议至少分配 2 GB 内存；本地运行大模型需要另计内存。
+在 Mac 浏览器打开 `http://localhost:18086`。默认仅监听本机，Apple Silicon（M 系列，arm64）和 Intel（amd64）使用同一份配置，无需指定 `platform`。应用本身建议至少分配 2 GB 内存；本地运行大模型需要另计内存。
 
 ```bash
 docker compose ps
