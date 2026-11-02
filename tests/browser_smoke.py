@@ -5,6 +5,7 @@ Requires Playwright + a browser; CHROMIUM_EXECUTABLE may select system Chromium.
 import argparse
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -109,11 +110,44 @@ def main():
                 for index in range(3):
                     if index:page.goto(base+'/#paper/'+paperid)
                     page.locator('a[href^="#practice/"]').nth(index).click()
-                    expect(page.locator('#question-materials')).to_have_text(expected['questions'][index]['materials'])
+                    assert re.sub(r'\s+','',page.locator('#question-materials').text_content())==re.sub(r'\s+','',expected['questions'][index]['materials'])
                     answer='加强基础建设，推动绿色创新；完善产业配套，提升竞争优势。'+str(index)
                     page.locator('#answer').fill(answer)
+                    if index==0:
+                        assert page.locator('#question-materials').evaluate('el=>getComputedStyle(el).fontSize')=='20px'
+                        page.locator('#reading-menu > summary').click()
+                        page.locator('#reading-size').select_option('24')
+                        page.locator('#reading-leading').select_option('2.2')
+                        page.locator('#reading-font').select_option('serif')
+                        page.locator('#reading-theme').select_option('night')
+                        page.locator('#reading-layout').select_option('stacked')
+                        expect(page.locator('#answer')).to_have_value(answer)
+                        assert page.locator('#answer').evaluate('el=>getComputedStyle(el).fontSize')=='24px'
+                        assert abs(float(page.locator('#question-materials').evaluate('el=>parseFloat(getComputedStyle(el).lineHeight)'))-52.8)<.1
+                        page.locator('#reading-menu > summary').click()
+                        page.reload();expect(page.locator('#answer')).to_have_value(answer)
+                        expect(page.locator('html')).to_have_attribute('data-reading-size','24')
+                        expect(page.locator('html')).to_have_attribute('data-reading-theme','night')
+                        assert page.locator('.writing-pane').bounding_box()['y']>page.locator('.reading-pane').bounding_box()['y']
+                        page.locator('.page-head [data-action="toggle-focus"]').click()
+                        expect(page.locator('.sidebar')).not_to_be_visible()
+                        page.locator('#reading-menu > summary').click()
+                        page.locator('[data-action="reader-reset"]').click()
+                        page.locator('#reading-menu > summary').click()
+                        expect(page.locator('#answer')).to_have_value(answer)
+                        expect(page.locator('html')).to_have_attribute('data-reading-size','20')
+                        page.screenshot(path='/tmp/shenlun-reader-browser-tested.png',full_page=True)
+                        page.keyboard.press('Escape')
+                        expect(page.locator('.sidebar')).to_be_visible()
+                        # Reading controls and long Chinese passages must fit narrow and wide screens.
+                        for width in [390,1280,1920]:
+                            page.set_viewport_size({'width':width,'height':1000})
+                            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth'),width
+                        page.set_viewport_size({'width':1440,'height':1080})
                     page.reload();expect(page.locator('#answer')).to_have_value(answer)
+                    page.locator('.grading-settings > summary').click()
                     page.locator('input[name="provider"]').nth(0).check();page.locator('input[name="provider"]').nth(1).check()
+                    expect(page.locator('#grading-summary')).to_contain_text('2')
                     page.locator('#answer-form button[type="submit"]').click()
                     page.wait_for_url('**/#attempt/*')
                     if index==0:
@@ -146,7 +180,7 @@ def main():
                 page.screenshot(path='/tmp/shenlun-mobile.png',full_page=True)
                 assert not errors,errors
                 browser.close()
-            print('PASS: browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)

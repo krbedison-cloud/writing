@@ -2,6 +2,40 @@
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
 const esc = x => String(x ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const READING_DEFAULTS={size:'20',leading:'2',font:'sans',theme:'paper',layout:'auto'};
+const READING_OPTIONS={size:['18','20','22','24'],leading:['1.8','2','2.2'],font:['sans','serif'],theme:['paper','light','night'],layout:['auto','stacked']};
+let readingPreferences={...READING_DEFAULTS};
+let focused=false;
+function applyReadingPreferences(preferences, persist=true){
+ for(const [key,values] of Object.entries(READING_OPTIONS)){
+  const value=values.includes(String(preferences[key]))?String(preferences[key]):READING_DEFAULTS[key];
+  readingPreferences[key]=value;
+  document.documentElement.dataset['reading'+key[0].toUpperCase()+key.slice(1)]=value;
+  const control=$('#reading-'+key);if(control)control.value=value;
+ }
+ if(persist){try{localStorage.setItem('reading-preferences',JSON.stringify(readingPreferences))}catch{/* Reading remains usable if browser storage is full. */}}
+}
+function restoreReadingPreferences(){let saved={};try{saved=JSON.parse(localStorage.getItem('reading-preferences')||'{}')||{}}catch{}applyReadingPreferences(saved,false);}
+function setFocusMode(value){
+ focused=value;
+ document.documentElement.dataset.focus=String(value);
+ $('#focus-exit').hidden=!value;
+ $$('[data-action="toggle-focus"]').filter(x=>x.id!=='focus-exit').forEach(x=>{x.textContent=value?'退出专注':'专注作答';x.setAttribute('aria-pressed',String(value));});
+}
+function readingText(value){
+ // Reflow PDF line wraps for display only; the canonical materials and API payload stay intact.
+ const blocks=[];let lines=[];
+ const flush=()=>{if(lines.length){const text=lines.reduce((a,b)=>a+(a&&/[A-Za-z0-9]$/.test(a)&&/^[A-Za-z0-9]/.test(b)?' ':'')+b,'');blocks.push(`<p>${esc(text)}</p>`);lines=[];}};
+ for(const raw of String(value||'').split(/\r?\n/)){
+  const line=raw.trim();
+  if(!line){flush();continue;}
+  if(/^(?:给定)?(?:材料|资料)\s*[（(]?[0-9一二三四五六七八九十]+[）)]?\s*(?:[:：].*)?$/.test(line)){flush();blocks.push(`<h3>${esc(line)}</h3>`);continue;}
+  if(/^要求[：:]/.test(line)){flush();lines.push(line);if(/[。！？；][”’」』）)]*$/.test(line))flush();continue;}
+  if(/^[（(]?[0-9一二三四五六七八九十]+[）).．、]/.test(line)){flush();blocks.push(`<p class="reading-item">${esc(line)}</p>`);continue;}
+  lines.push(line);if(/[。！？；][”’」』）)]*$/.test(line))flush();
+ }
+ flush();return blocks.join('');
+}
 const kinds = {summary:'概括 / 短简报',practical:'应用文 / 短评',essay:'大作文'};
 const full = {summary:20,practical:30,essay:50};
 const statuses = {queued:'排队中',running:'批改中',completed:'已完成',partial:'部分模型失败',failed:'批改失败',summary_failed:'汇总失败',interrupted:'已中断'};
@@ -79,8 +113,8 @@ async function practice(pid,qid){
  const data=await api('/papers/'+pid+'/questions/'+qid),p=data.paper,q=data.question;state.paper=p;state.question=q;
  const selected=JSON.parse(localStorage.getItem('selected-models')||'[]');
  const draft=localStorage.getItem('draft-'+qid)||'';
- return head('专注这一份作答',sourceText(p)+' · 第 '+q.number+' 题',`<a class="btn" href="#paper/${pid}">返回试卷</a>`,'WRITING SESSION')+
- `<div class="practice-grid"><section class="card"><div class="row between"><h2>题目与材料</h2>${badge(kinds[q.kind]+' · '+full[q.kind]+' 分')}</div><div class="prose section-gap">${esc(q.prompt)}</div><div class="notice ${q.material_scope.needs_review?'warn':''} section-gap">${esc(q.material_scope.note)} · 本题材料 ${q.material_scope.character_count} 字符${q.material_scope.saved_percent?' · 较整卷材料减少 '+q.material_scope.saved_percent+'% 文字':''}${q.material_scope.needs_review?' · 可在试卷校对中调整':''}</div><details open class="plain-details"><summary>本题材料 · 展开 / 收起</summary><div class="material" id="question-materials">${esc(q.materials)}</div></details></section><section class="card"><div class="card-head"><h2>我的答案</h2><span class="subtitle">自动保存到当前浏览器</span></div><form id="answer-form"><textarea class="answer-area" name="answer" id="answer" maxlength="20000" required placeholder="想清楚要点，写下你的答案。每一次认真表达都值得被看见。">${esc(draft)}</textarea><div class="answer-foot"><span id="draft-status">${draft?'已恢复本地草稿':'尚未输入'}</span><span id="word-count">${draft.replace(/\s/g,'').length} 字 ${q.word_max?' / 要求 '+(q.word_min?q.word_min+'–':'不超过 ')+q.word_max+' 字':''}</span></div><h3>选择独立批改的教练</h3><p class="tiny muted">可多选 · 同一份答案并行批改，最多同时请求 4 个接口</p><div class="model-select">${state.providers.length?state.providers.map(p=>`<label class="check-pill"><input type="checkbox" name="provider" value="${p.id}" ${selected.includes(p.id)||(!selected.length&&state.providers[0].id===p.id)?'checked':''}>${esc(p.name)}</label>`).join(''):'<a class="link" href="#models">先添加你的第一个模型接口 →</a>'}</div><label class="field">主模型 · 汇总诊断与历史画像<select name="master" required>${modelOptions(localStorage.getItem('master')||'')}</select></label><p class="tiny muted">批改仅发送本题所选材料、题干、你的答案与评分规则；批改成功后，主模型还会基于全部历史摘要更新画像。按接口实际计费。</p><div class="section-gap">${btn('submit-answer',`${icon('check')} 提交并开始批改`,'primary full-width',state.providers.length?'type="submit"':'disabled type="submit"')}</div></form></section></div>`;
+ return head('专注这一份作答',sourceText(p)+' · 第 '+q.number+' 题',btn('toggle-focus','专注作答','','aria-pressed="false"')+`<a class="btn" href="#paper/${pid}">返回试卷</a>`,'WRITING SESSION')+
+ `<div class="practice-grid"><section class="card reading-pane"><div class="card-head"><h2>题目与材料</h2>${badge(kinds[q.kind]+' · '+full[q.kind]+' 分')}</div><div class="pane-scroll"><div class="prose question-stem reading-text">${readingText(q.prompt)}</div><div class="notice ${q.material_scope.needs_review?'warn':''} section-gap">${esc(q.material_scope.note)} · 本题材料 ${q.material_scope.character_count} 字符${q.material_scope.saved_percent?' · 较整卷材料减少 '+q.material_scope.saved_percent+'% 文字':''}${q.material_scope.needs_review?' · 可在试卷校对中调整':''}</div><section class="material-section"><div class="material reading-text" id="question-materials">${readingText(q.materials)}</div></section></div></section><section class="card writing-pane"><div class="card-head"><h2>我的答案</h2><span class="subtitle">自动保存到当前浏览器</span></div><form id="answer-form" class="answer-form"><textarea class="answer-area" name="answer" id="answer" maxlength="20000" required placeholder="想清楚要点，写下你的答案。每一次认真表达都值得被看见。">${esc(draft)}</textarea><div class="answer-foot"><span id="draft-status">${draft?'已恢复本地草稿':'尚未输入'}</span><span id="word-count">${draft.replace(/\s/g,'').length} 字 ${q.word_max?' / 要求 '+(q.word_min?q.word_min+'–':'不超过 ')+q.word_max+' 字':''}</span></div><details class="grading-settings"><summary>选择批改模型 <span class="muted small" id="grading-summary">· 已选 ${state.providers.filter(p=>selected.includes(p.id)||(!selected.length&&state.providers[0].id===p.id)).length} 位教练</span></summary><div class="grading-settings-body"><h3>独立批改的教练</h3><p class="tiny muted">可多选 · 同一份答案并行批改，最多同时请求 4 个接口</p><div class="model-select">${state.providers.length?state.providers.map(p=>`<label class="check-pill"><input type="checkbox" name="provider" value="${p.id}" ${selected.includes(p.id)||(!selected.length&&state.providers[0].id===p.id)?'checked':''}>${esc(p.name)}</label>`).join(''):'<a class="link" href="#models">先添加你的第一个模型接口 →</a>'}</div><label class="field">主模型 · 汇总诊断与历史画像<select name="master" required>${modelOptions(localStorage.getItem('master')||'')}</select></label><p class="tiny muted">批改仅发送本题所选材料、题干、你的答案与评分规则；批改成功后，主模型还会基于全部历史摘要更新画像。按接口实际计费。</p></div></details><div class="submit-row">${btn('submit-answer',`${icon('check')} 提交并开始批改`,'primary full-width',state.providers.length?'type="submit"':'disabled type="submit"')}</div></form></section></div>`;
 }
 async function history(){
  const rows=await api('/attempts');state.history=rows;
@@ -96,7 +130,7 @@ async function attemptView(id){
  (a.error?`<div class="notice error">${esc(a.error)}</div>`:'')+
  `<div class="score-cards"><div class="score-card"><p>有效批改均分</p><div class="score">${a.mean_score??'—'}<small> / ${full[q.kind]}</small></div><span class="tiny muted">${good.length} / ${a.providers.length} 个模型成功 · 分差 ${a.score_spread??'—'}</span></div>${a.providers.map(p=>{const g=a.grades.find(g=>g.provider_id===p.id);return `<div class="score-card"><p>${esc(p.name)}</p>${g?.status==='completed'?`<div class="score">${g.result.score}<small> / ${full[q.kind]}</small></div>`:badge(g?'失败':'等待中',g?'red':'blue')}<span class="tiny muted">${esc(p.model)}</span>${g?.error?`<p class="small">${esc(g.error)}</p>`:''}</div>`}).join('')}</div>`+
  (a.status==='partial'?'<div class="notice warn">仅成功模型参与均分。失败项未被算作零分；可重试失败项，成功项不会重复调用。</div>':'')+
- `<div class="grid-main"><div class="stack"><section class="card"><div class="card-head"><h2>主模型 · 汇总诊断</h2>${badge(a.master.name)}</div>${a.synthesis?`<div class="prose">${esc(a.synthesis.analysis)}</div><div class="grade-section"><h3>教练们的共识</h3>${list(a.synthesis.consensus)}<h3>需要辨别的分歧</h3>${a.synthesis.disagreements.length?list(a.synthesis.disagreements):'<p class="small muted">本次未报告明显分歧。</p>'}<h3>下一次，就这样改</h3>${list(a.synthesis.action_plan)}</div>`:empty(busy?'诊断正在路上':'尚无汇总诊断',busy?'先认真写，再一起看清得失。':'请检查失败原因后重试。')}</section></div><section class="card"><div class="card-head"><h2>当时的原答案</h2>${badge(kinds[q.kind])}</div><div class="prose">${esc(a.answer)}</div><details class="plain-details"><summary>查看本次题干与材料快照</summary><div class="prose">${esc(q.prompt)}</div><h3 class="section-gap">${esc(q.material_scope?.note||'当时存档的材料')}</h3><div class="material">${esc(q.materials)}</div></details><a class="btn small section-gap" href="#practice/${a.paper_id}/${a.question_id}">再练一次 ${icon('arrow')}</a></section></div>`+
+ `<div class="grid-main"><div class="stack"><section class="card"><div class="card-head"><h2>主模型 · 汇总诊断</h2>${badge(a.master.name)}</div>${a.synthesis?`<div class="prose">${esc(a.synthesis.analysis)}</div><div class="grade-section"><h3>教练们的共识</h3>${list(a.synthesis.consensus)}<h3>需要辨别的分歧</h3>${a.synthesis.disagreements.length?list(a.synthesis.disagreements):'<p class="small muted">本次未报告明显分歧。</p>'}<h3>下一次，就这样改</h3>${list(a.synthesis.action_plan)}</div>`:empty(busy?'诊断正在路上':'尚无汇总诊断',busy?'先认真写，再一起看清得失。':'请检查失败原因后重试。')}</section></div><section class="card"><div class="card-head"><h2>当时的原答案</h2>${badge(kinds[q.kind])}</div><div class="prose">${esc(a.answer)}</div><details class="plain-details"><summary>查看本次题干与材料快照</summary><div class="prose">${esc(q.prompt)}</div><h3 class="section-gap">${esc(q.material_scope?.note||'当时存档的材料')}</h3><div class="material reading-text">${readingText(q.materials)}</div></details><a class="btn small section-gap" href="#practice/${a.paper_id}/${a.question_id}">再练一次 ${icon('arrow')}</a></section></div>`+
  `<section class="card section-gap"><div class="card-head"><h2>每位教练的详细批改与参考范文</h2><span class="subtitle">AI 生成 · 非官方标准答案</span></div>${good.length?`<div class="tabs">${good.map((g,i)=>`<button data-action="review-tab" data-id="${g.provider_id}" class="${i===0?'active':''}">${esc(g.name)} · ${g.result.score} 分</button>`).join('')}</div><div id="review-body">${reviewBody(good[0])}</div>`:empty('等待第一份批改结果','各模型的评分、证据与范文会在这里分别呈现。')}</section>`;
 }
 function reviewBody(g){const r=g.result;return `<div class="row between wrap"><h3>${esc(g.name)} <span class="tiny muted">${esc(g.model)}</span></h3><span class="tiny muted">范文来自此模型，未由主模型改写</span></div><div class="row wrap section-gap">${dimensions.map(k=>badge(k+' '+r.dimensions[k])).join(' ')}</div><div class="grid-main grade-section"><div><h3>值得保持</h3>${list(r.strengths)}<h3>不足与扣分依据</h3>${list(r.weaknesses)}${list(r.evidence)}</div><div><h3>具体改法</h3>${list(r.suggestions)}</div></div><h3>高分参考答案 · ${esc(g.name)}</h3><div class="answer-reference prose">${esc(r.high_score_answer)}</div>`;}
@@ -110,8 +144,10 @@ async function profile(){const s=await api('/profile'),p=s.portrait;return head(
 const navs=[['overview','学习概览'],['papers','真题练习'],['history','练习历史'],['profile','能力与竞争力'],['models','模型设置']];
 $('#navigation').innerHTML=navs.map(([k,v])=>`<a href="#${k}" data-nav="${k}" aria-label="${v}">${icon(k)}<span>${v}</span></a>`).join('');
 async function route(quiet=false){
+ setFocusMode(false);
  const token=++state.routeToken;
  const [view='overview',id,qid]=(location.hash.slice(1)||'overview').split('/');
+ $('#main').dataset.view=view;
  const nav=['paper','practice'].includes(view)?'papers':view==='attempt'?'history':view;
  $$('[data-nav]').forEach(a=>a.classList.toggle('active',a.dataset.nav===nav));
  $('#crumb').textContent=navs.find(n=>n[0]===nav)?.[1]||'学习空间';
@@ -140,6 +176,8 @@ function questionEditor(q={number:1,kind:'summary',prompt:'',word_min:0,word_max
 }
 function paperEditor(){const p=state.paper;showDialog(`<div class="dialog-head"><h2>校对试卷与训练档</h2>${btn('close-dialog',icon('close'),'small','aria-label="关闭"')}</div><form id="paper-form"><label class="field">试卷名称<input name="title" value="${esc(p.title)}" required maxlength="180"></label><div class="field-grid">${field('年份','year',p.year)}${field('省份','province',p.province)}${field('卷别','volume',p.volume)}</div><div id="questions-editor">${p.questions.map(questionEditor).join('')}</div>${btn('add-question','添加题目','small','type="button"')}<details class="plain-details"><summary>校对给定材料</summary><label class="field"><textarea name="materials" maxlength="160000">${esc(p.materials)}</textarea></label></details><div class="notice section-gap">训练分值固定为 20 / 30 / 50；原题分数仅保留在题干作为来源。请核对原题文体与字数，避免识别错误影响批改。已有练习历史保留提交时的快照。</div><label class="check-pill"><input type="checkbox" name="confirmed" ${p.confirmed?'checked':''}>我已核对题目、材料和来源，允许开始作答</label><button type="submit" class="btn primary section-gap">保存校对结果</button></form>`);}
 async function act(el){const action=el.dataset.action;
+ if(action==='toggle-focus')return setFocusMode(!focused);
+ if(action==='reader-reset')return applyReadingPreferences(READING_DEFAULTS);
  if(action==='upload')return $('#pdf-input').click();
  if(action==='close-dialog')return closeDialog();
  if(action==='add-model')return modelEditor();
@@ -197,6 +235,8 @@ document.addEventListener('input',event=>{
 });
 document.addEventListener('change',event=>{
  const el=event.target;
+ if(el.id?.startsWith('reading-')){const key=el.id.slice(8);if(READING_OPTIONS[key])applyReadingPreferences({...readingPreferences,[key]:el.value});}
+ if(el.name==='provider'&&$('#grading-summary'))$('#grading-summary').textContent='· 已选 '+$$('#answer-form [name="provider"]:checked').length+' 位教练';
  if(el.name==='material_mode'){const q=el.closest('.edit-q');$('[data-material-selection]',q).hidden=el.value!=='selected';$('[data-custom-materials]',q).hidden=el.value!=='custom';}
  if(el.id==='history-filter')$('#history-list').innerHTML=historyTable(state.history.filter(a=>!el.value||a.kind===el.value));
  if(el.id==='protocol'){
@@ -225,4 +265,6 @@ async function poll(){
  }catch{/* Keep entered answers intact during transient disconnections. */}
  setTimeout(poll,2500);
 }
-route();poll();
+document.addEventListener('click',event=>{const menu=$('#reading-menu');if(menu.open&&!menu.contains(event.target))menu.open=false;});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('dialog[open]')){if($('#reading-menu').open)$('#reading-menu').open=false;else if(focused)setFocusMode(false);}});
+restoreReadingPreferences();route();poll();
