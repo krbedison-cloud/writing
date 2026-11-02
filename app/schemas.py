@@ -1,0 +1,81 @@
+from typing import Literal
+from pydantic import BaseModel, Field, ConfigDict, model_validator
+
+KINDS = {"summary": ("概括 / 短简报", 20), "practical": ("应用文 / 短评", 30), "essay": ("大作文", 50)}
+DIMENSIONS = ["审题立意", "要点提炼", "材料运用", "结构逻辑", "语言表达", "文体规范"]
+
+class ProviderInput(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    protocol: Literal["openai", "anthropic", "gemini"] = "openai"
+    base_url: str = Field(min_length=8, max_length=500)
+    model: str = Field(min_length=1, max_length=160, pattern=r"^[a-zA-Z0-9._:/@+\-]+$")
+    api_key: str = Field(default="", max_length=2000)
+    max_tokens: int = Field(default=6000, ge=1000, le=32000)
+    @model_validator(mode="after")
+    def validate_url(self):
+        from urllib.parse import urlsplit
+        p = urlsplit(self.base_url)
+        if p.scheme not in ("https", "http") or not p.hostname or p.username or p.password or p.query or p.fragment:
+            raise ValueError("接口地址只能使用无凭据、查询参数的 HTTP(S) URL")
+        self.base_url = self.base_url.rstrip("/")
+        return self
+
+class QuestionInput(BaseModel):
+    number: int = Field(ge=1, le=100)
+    kind: Literal["summary", "practical", "essay"]
+    prompt: str = Field(min_length=4, max_length=16000)
+    word_min: int = Field(default=0, ge=0, le=5000)
+    word_max: int = Field(default=0, ge=0, le=5000)
+    classification_note: str = Field(default="人工校对", max_length=600)
+    @model_validator(mode="after")
+    def limits(self):
+        if self.word_max and self.word_min > self.word_max:
+            raise ValueError("最少字数不能超过最多字数")
+        return self
+
+class PaperInput(BaseModel):
+    title: str = Field(min_length=1, max_length=180)
+    year: str = Field(default="待确认", max_length=20)
+    province: str = Field(default="待确认", max_length=40)
+    volume: str = Field(default="待确认", max_length=40)
+    materials: str = Field(max_length=160000)
+    questions: list[QuestionInput] = Field(min_length=1, max_length=30)
+    confirmed: bool = False
+    @model_validator(mode="after")
+    def unique_numbers(self):
+        if len({q.number for q in self.questions}) != len(self.questions):
+            raise ValueError("题号不能重复")
+        return self
+
+class AttemptInput(BaseModel):
+    question_id: str
+    answer: str = Field(min_length=1, max_length=20000)
+    provider_ids: list[str] = Field(min_length=1, max_length=12)
+    master_id: str
+
+class Grade(BaseModel):
+    score: float = Field(ge=0, le=50, allow_inf_nan=False)
+    dimensions: dict[str, float]
+    strengths: list[str] = Field(min_length=1, max_length=10)
+    weaknesses: list[str] = Field(min_length=1, max_length=10)
+    suggestions: list[str] = Field(min_length=1, max_length=10)
+    evidence: list[str] = Field(min_length=1, max_length=12)
+    high_score_answer: str = Field(min_length=10, max_length=12000)
+    @model_validator(mode="after")
+    def dimensions_valid(self):
+        import math
+        if set(self.dimensions) != set(DIMENSIONS) or any(not math.isfinite(v) or not 0 <= v <= 100 for v in self.dimensions.values()):
+            raise ValueError("必须返回六项 0–100 维度分")
+        return self
+
+class Synthesis(BaseModel):
+    analysis: str = Field(min_length=10, max_length=10000)
+    consensus: list[str] = Field(min_length=1, max_length=10)
+    disagreements: list[str] = Field(max_length=10)
+    action_plan: list[str] = Field(min_length=1, max_length=8)
+
+class Portrait(BaseModel):
+    analysis: str = Field(min_length=10, max_length=12000)
+    strengths: list[str] = Field(min_length=1, max_length=8)
+    weaknesses: list[str] = Field(min_length=1, max_length=8)
+    action_plan: list[str] = Field(min_length=1, max_length=8)
