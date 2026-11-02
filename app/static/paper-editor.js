@@ -1,0 +1,143 @@
+(function(root){
+ 'use strict';
+ const ruleCache=new Map();
+ function rule(selector){
+  if(ruleCache.has(selector))return ruleCache.get(selector);
+  const sheet=[...document.styleSheets].find(s=>s.href?.endsWith('/static/paper.css'));
+  if(!sheet)throw Error('稿纸样式尚未加载，请刷新页面');
+  const index=sheet.insertRule(selector+'{}',sheet.cssRules.length),r=sheet.cssRules[index];ruleCache.set(selector,r);return r;
+ }
+ function cells(grid,number,columns){
+  const cache=[];
+  for(let row=0;row<number;row++){
+   const line=document.createElement('div');line.className='paper-row';
+   const label=document.createElement('span');label.className='paper-row-number';label.textContent=String(row+1);line.append(label);
+   for(let col=0;col<columns;col++){
+    const cell=document.createElement('span');cell.className='paper-cell';cell.dataset.cell=String(row*columns+col);line.append(cell);cache.push(cell);
+   }
+   grid.append(line);
+  }
+  return cache;
+ }
+ class Editor{
+  constructor({spec,onChange,toast}){
+   this.spec=spec;this.onChange=onChange;this.toast=toast;
+   this.root=document.querySelector('#paper-editor');this.grid=document.querySelector('#paper-grid');this.input=document.querySelector('#answer');this.viewport=document.querySelector('#paper-viewport');this.surface=document.querySelector('#paper-surface');this.cellNodes=[];this.rows=0;this.drag=null;this.composing=false;
+   this.abort=new AbortController();const options={signal:this.abort.signal};
+   this.input.addEventListener('input',()=>this.render(true),options);
+   this.input.addEventListener('compositionstart',()=>{this.composing=true;},options);
+   this.input.addEventListener('compositionend',()=>{this.composing=false;this.render(true);},options);
+   this.input.addEventListener('keydown',event=>this.key(event),options);
+   this.grid.addEventListener('pointerdown',event=>this.pointerDown(event),options);
+   this.grid.addEventListener('pointermove',event=>this.pointerMove(event),options);
+   this.grid.addEventListener('pointerup',()=>{this.drag=null;},options);
+   this.grid.addEventListener('pointercancel',()=>{this.drag=null;},options);
+   document.addEventListener('selectionchange',()=>{if(document.activeElement===this.input)this.selection();},options);
+   this.input.addEventListener('focus',()=>this.selection(),options);this.input.addEventListener('blur',()=>this.selection(),options);
+   this.root.querySelectorAll('[data-paper-format]').forEach(button=>button.addEventListener('click',()=>this.format(button.dataset.paperFormat),options));
+   this.root.querySelector('[data-paper-mode]').addEventListener('click',()=>this.toggleMode(),options);
+   const indent=this.root.querySelector('#paper-indent');
+   try{indent.checked=localStorage.getItem('paper-auto-indent')!=='0';}catch{}
+   indent.addEventListener('change',()=>{try{localStorage.setItem('paper-auto-indent',indent.checked?'1':'0')}catch{}},options);
+   this.observer=new ResizeObserver(()=>this.selection());this.observer.observe(this.viewport);
+   this.render(false);
+  }
+  destroy(){this.abort.abort();this.observer.disconnect();}
+  render(scroll){
+   this.layout=PaperLayout.analyze(this.input.value,this.spec);
+   const total=Math.max(this.spec.rows,this.layout.used_rows,1);
+   if(total!==this.rows){this.grid.replaceChildren();this.cellNodes=cells(this.grid,total,this.spec.columns);this.rows=total;}
+   this.cellNodes.forEach((node,index)=>{
+    const slot=this.layout.slots[index],value=slot?.text||'';
+    if(node.textContent!==value)node.textContent=value;
+    node.classList.toggle('paper-overflow',index>=this.spec.cells);
+   });
+   this.onChange?.(PaperLayout.check(this.input.value,this.spec));
+   this.selection(scroll);
+  }
+  selection(scroll=false){
+   if(!this.layout||!this.input.isConnected)return;
+   const start=this.input.selectionStart,end=this.input.selectionEnd,focus=this.input.selectionDirection==='backward'?start:end;
+   const cursor=this.layout.carets[focus]||this.layout.carets.at(-1)||{row:0,col:0};
+   let index=cursor.row*this.spec.columns+cursor.col;
+   const after=index>=this.cellNodes.length;index=Math.min(index,this.cellNodes.length-1);
+   const active=document.activeElement===this.input;
+   this.cellNodes.forEach((node,i)=>{
+    const slot=this.layout.slots[i];
+    node.classList.toggle('paper-selected',!!slot&&start!==end&&slot.start<end&&slot.end>start);
+    node.classList.toggle('paper-caret',active&&start===end&&i===index);
+    node.classList.toggle('paper-caret-end',after&&i===index);
+   });
+   const cell=this.cellNodes[index];if(!cell)return;
+   if(this.root.dataset.mode==='grid'){
+    if(scroll&&active)cell.scrollIntoView({block:'nearest',inline:'nearest'});
+    const rect=cell.getBoundingClientRect(),base=this.surface.getBoundingClientRect();
+    rule('#paper-editor[data-mode="grid"] #answer').style.setProperty('left',Math.max(0,rect.left-base.left+(after?rect.width-2:0))+'px');
+    rule('#paper-editor[data-mode="grid"] #answer').style.setProperty('top',Math.max(0,rect.top-base.top)+'px');
+   }
+  }
+  atCell(index,after=false){
+   const slot=this.layout.slots[index];if(slot)return after?slot.end:slot.start;
+   const row=Math.floor(index/this.spec.columns),col=index%this.spec.columns;
+   let best=this.input.value.length,distance=Infinity;
+   this.layout.carets.forEach((point,i)=>{const d=Math.abs(point.row-row)*this.spec.columns+Math.abs(point.col-col);if(d<distance){best=i;distance=d;}});
+   return best;
+  }
+  range(anchor,end){this.input.focus({preventScroll:true});this.input.setSelectionRange(Math.min(anchor,end),Math.max(anchor,end),end<anchor?'backward':'forward');this.selection();}
+  pointerDown(event){
+   const cell=event.target.closest('.paper-cell');if(!cell||event.button!==0)return;
+   event.preventDefault();const rect=cell.getBoundingClientRect();const index=this.atCell(Number(cell.dataset.cell),event.clientX>rect.left+rect.width/2);
+   this.drag=index;this.grid.setPointerCapture(event.pointerId);this.range(index,index);
+  }
+  pointerMove(event){
+   if(this.drag===null)return;
+   const bounds=this.viewport.getBoundingClientRect();
+   if(event.clientX>bounds.right-20)this.viewport.scrollLeft+=20;
+   if(event.clientX<bounds.left+20)this.viewport.scrollLeft-=20;
+   if(event.clientY>bounds.bottom-20)this.viewport.scrollTop+=20;
+   if(event.clientY<bounds.top+20)this.viewport.scrollTop-=20;
+   const cell=document.elementFromPoint(event.clientX,event.clientY)?.closest('.paper-cell');if(!cell||!this.grid.contains(cell))return;
+   const rect=cell.getBoundingClientRect();this.range(this.drag,this.atCell(Number(cell.dataset.cell),event.clientX>rect.left+rect.width/2));
+  }
+  insert(text,start=this.input.selectionStart,end=this.input.selectionEnd){
+   this.input.focus({preventScroll:true});this.input.setSelectionRange(start,end);
+   if(!document.execCommand('insertText',false,text)){
+    this.input.setRangeText(text,start,end,'end');this.input.dispatchEvent(new Event('input',{bubbles:true}));
+   }
+   this.render(true);
+  }
+  key(event){
+   if(event.isComposing||this.composing||event.keyCode===229)return;
+   if(event.key==='Escape'&&this.root.dataset.mode==='grid'){event.stopPropagation();this.root.querySelector('[data-paper-mode]').focus();return;}
+   if(event.key==='Tab'&&!event.shiftKey){event.preventDefault();this.insert('\u3000\u3000');return;}
+   if(event.key==='Enter'){event.preventDefault();this.insert('\n'+(this.root.querySelector('#paper-indent').checked?'\u3000\u3000':''));return;}
+   if(this.root.dataset.mode!=='grid'||event.ctrlKey||event.metaKey)return;
+   if(['ArrowUp','ArrowDown','Home','End'].includes(event.key)){
+    event.preventDefault();const focus=this.input.selectionDirection==='backward'?this.input.selectionStart:this.input.selectionEnd;const position=this.layout.carets[focus]||this.layout.carets.at(-1),col=position.col;
+    const row=Math.max(0,position.row+(event.key==='ArrowUp'?-1:event.key==='ArrowDown'?1:0));
+    const target=row*this.spec.columns+(event.key==='Home'?0:event.key==='End'?this.spec.columns-1:col);
+    const end=this.atCell(target,event.key==='End');this.range(event.shiftKey?(this.input.selectionDirection==='backward'?this.input.selectionEnd:this.input.selectionStart):end,end);this.selection(true);
+   }
+  }
+  format(mode){
+   const value=this.input.value,at=this.input.selectionStart,start=at>0?value.lastIndexOf('\n',at-1)+1:0,tail=value.indexOf('\n',at),end=tail<0?value.length:tail;
+   const text=value.slice(start,end).replace(/^[\s\u3000]+|[\s\u3000]+$/g,'');
+   const width=PaperLayout.analyze(text,this.spec).occupied_cells;
+   if((mode==='center'||mode==='right')&&width>this.spec.columns){this.toast?.('该行超过25格，先缩短这一行再对齐');return;}
+   const pad=mode==='indent'?2:mode==='center'?Math.floor((this.spec.columns-width)/2):mode==='right'?this.spec.columns-width:0;
+   this.insert('\u3000'.repeat(Math.max(0,pad))+text,start,end);
+  }
+  toggleMode(){
+   const plain=this.root.dataset.mode!=='plain';this.root.dataset.mode=plain?'plain':'grid';this.grid.hidden=plain;
+   this.root.querySelector('[data-paper-mode]').textContent=plain?'返回格子纸':'原文编辑';this.input.focus({preventScroll:true});this.selection();
+  }
+ }
+ function preview(answer,spec){
+  const container=document.createElement('div');container.className='paper-preview';
+  const layout=PaperLayout.analyze(answer,spec),grid=document.createElement('div');grid.className='paper-grid';
+  const nodes=cells(grid,Math.max(spec.rows,layout.used_rows,1),spec.columns);
+  nodes.forEach((node,index)=>{node.textContent=layout.slots[index]?.text||'';node.classList.toggle('paper-overflow',index>=spec.cells);});
+  container.append(grid);return container;
+ }
+ root.GridPaper={Editor,preview,rule};
+})(window);

@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict, model_validator, field_validator, AliasChoices
 
 KINDS = {"summary": ("概括 / 短简报", 20), "practical": ("应用文 / 短评", 30), "essay": ("大作文", 50)}
 DIMENSIONS = ["审题立意", "要点提炼", "材料运用", "结构逻辑", "语言表达", "文体规范"]
@@ -26,6 +26,7 @@ class QuestionInput(BaseModel):
     prompt: str = Field(min_length=4, max_length=16000)
     word_min: int = Field(default=0, ge=0, le=5000)
     word_max: int = Field(default=0, ge=0, le=5000)
+    paper_rows: int = Field(default=0, ge=0, le=400)
     classification_note: str = Field(default="人工校对", max_length=600)
     material_mode: Literal["auto", "selected", "all", "custom"] = "auto"
     material_ids: list[int] = Field(default_factory=list, max_length=100)
@@ -62,7 +63,41 @@ class AttemptInput(BaseModel):
     provider_ids: list[str] = Field(min_length=1, max_length=12)
     master_id: str
 
-class Grade(BaseModel):
+class ReferenceSelfCheck(BaseModel):
+    word_count: int = Field(ge=0, le=20000)
+    used_rows: int = Field(ge=0, le=20000, validation_alias=AliasChoices('used_rows','rows_used'))
+    complies: bool
+    format_note: str = Field(default="", max_length=1800)
+
+class ReferenceDraft(BaseModel):
+    high_score_answer: str = Field(min_length=10, max_length=12000)
+    high_score_self_check: ReferenceSelfCheck | None = None
+    @field_validator('high_score_self_check', mode='before')
+    @classmethod
+    def valid_self_check(cls, value):
+        if value is None:
+            return None
+        try:
+            return ReferenceSelfCheck.model_validate(value)
+        except (ValueError, TypeError):
+            return None
+
+class RegenerateInput(BaseModel):
+    provider_id: str
+    direction: Literal["more", "less"]
+    reference_id: str = "original"
+
+class HighlightInput(BaseModel):
+    signature: str = Field(pattern=r"^[a-f0-9]{64}$")
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    quote: str = Field(min_length=1, max_length=160000)
+    color: str = Field(default="#ffff00", pattern=r"^#[0-9a-fA-F]{6}$")
+
+class HighlightColor(BaseModel):
+    color: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
+
+class Grade(ReferenceDraft):
     score: float = Field(ge=0, le=50, allow_inf_nan=False)
     dimensions: dict[str, float]
     strengths: list[str] = Field(min_length=1, max_length=10)
@@ -70,6 +105,7 @@ class Grade(BaseModel):
     suggestions: list[str] = Field(min_length=1, max_length=10)
     evidence: list[str] = Field(min_length=1, max_length=12)
     high_score_answer: str = Field(min_length=10, max_length=12000)
+    high_score_self_check: ReferenceSelfCheck | None = None
     @model_validator(mode="after")
     def dimensions_valid(self):
         import math

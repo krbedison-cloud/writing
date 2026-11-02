@@ -2,6 +2,8 @@
 import copy
 import re
 import unicodedata
+from .paper import paper_spec
+from .annotations import material_signature
 
 NUMBER = r'(?:[0-9０-９]{1,3}|[一二三四五六七八九十百零〇两]{1,6})'
 HEADING = re.compile(
@@ -124,6 +126,8 @@ def prepare_paper(paper):
         q.setdefault('material_ids', [])
         q.setdefault('custom_materials', '')
         q['materials'], q['material_scope'] = resolve_materials(p['materials'], q, blocks)
+        q['paper_spec'] = paper_spec(q)
+        q['material_signature'] = material_signature(q['materials'])
     return p
 
 
@@ -133,4 +137,4 @@ def model_question(snapshot):
         materials = snapshot['materials']
     else:
         materials, _ = resolve_materials(snapshot.get('materials',''), snapshot)
-    return {k:snapshot[k] for k in ('number','kind','prompt','word_min','word_max') if k in snapshot} | {'materials':materials}
+    return {k:snapshot[k] for k in ('number','kind','prompt','word_min','word_max') if k in snapshot} | {'materials':materials, 'paper_spec':snapshot.get('paper_spec') or paper_spec(snapshot)}

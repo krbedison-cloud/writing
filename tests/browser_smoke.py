@@ -19,9 +19,11 @@ import httpx
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from app.schemas import DIMENSIONS
+from app.paper import check_paper
 
 counts={}
 received_contexts=[]
+received_reference_contexts=[]
 class MockModel(BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def do_POST(self):
@@ -33,6 +35,15 @@ class MockModel(BaseHTTPRequestHandler):
             if model=='coach-b' and counts[model]==1:
                 self.send_response(429);self.end_headers();self.wfile.write(b'mock rate limit');return
             result=dict(score=payload['full_score']-(4 if model=='coach-a' else 6),dimensions={k:70 for k in DIMENSIONS},strengths=['观点清晰'],weaknesses=['材料要点尚有遗漏'],suggestions=['分类概括关键措施'],evidence=['原答案“加强建设”需要展开具体措施'],high_score_answer='这是模拟接口生成的参考答案，仅用于验证调用与存档流程，不是真实模型批改。')
+        elif task.startswith(('范文校正','单独重写高分范文')):
+            received_reference_contexts.append(payload['question'])
+            spec=payload['question']['paper_spec'];header='模拟接口生成的参考范文'
+            target=payload.get('target_word_count') or max(spec['word_min'],round((spec['word_max'] or spec['cells'])*.8))
+            target=max(len(header)+10,min(target,(spec['word_max'] or spec['cells'])-25))
+            target=max(target,spec['word_min'])
+            answer=header+'\n　　'+'甲'*(target-len(header))
+            check=check_paper(answer,spec)
+            result=dict(high_score_answer=answer,high_score_self_check=dict(word_count=check['word_count'],used_rows=check['used_rows'],complies=check['valid'],format_note='已检查标题、段首缩进和换行占格'))
         elif task.startswith('汇总'):
             result=dict(analysis='模拟汇总：各模型独立批改已完成，建议加强材料要点的分类与表达。',consensus=['需要更加具体的材料支撑'],disagreements=['评分存在一定分差'],action_plan=['先列出要点，再用短句组织'])
         elif task.startswith('基于全部'):
@@ -65,6 +76,7 @@ def main():
                 browser=pw.chromium.launch(headless=True,executable_path=executable,args=['--no-sandbox'])
                 page=browser.new_page(viewport={'width':1440,'height':1080})
                 errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+                page.add_init_script("window.__csp=[];document.addEventListener('securitypolicyviolation',e=>window.__csp.push(e.violatedDirective));")
                 page.goto(base+'/#models')
                 for model in ['coach-a','coach-b']:
                     page.locator('[data-action="add-model"]').first.click()
@@ -111,6 +123,45 @@ def main():
                     if index:page.goto(base+'/#paper/'+paperid)
                     page.locator('a[href^="#practice/"]').nth(index).click()
                     assert re.sub(r'\s+','',page.locator('#question-materials').text_content())==re.sub(r'\s+','',expected['questions'][index]['materials'])
+                    if index==0:
+                        expect(page.locator('#highlight-count')).to_contain_text('已保存')
+                        assert page.locator('.paper-row').count()==expected['questions'][0]['paper_spec']['rows']
+                        assert page.locator('.paper-row').first.locator('.paper-cell').count()==25
+                        assert page.locator('#answer').input_value()=='　　'
+                        # Select source text and apply the default bright-yellow annotation.
+                        page.evaluate("""() => {const p=document.querySelector('#question-materials p');const w=document.createTreeWalker(p,NodeFilter.SHOW_TEXT);const n=w.nextNode();const r=document.createRange();r.setStart(n,0);r.setEnd(n,Math.min(12,n.length));const s=getSelection();s.removeAllRanges();s.addRange(r);} """)
+                        expect(page.locator('#material-toolbar')).to_be_visible()
+                        expect(page.locator('#highlight-color')).to_have_value('#ffff00')
+                        page.locator('[data-highlight-save]').click()
+                        expect(page.locator('mark.material-mark')).to_have_count(1)
+                        assert page.locator('mark.material-mark').evaluate('el=>getComputedStyle(el).backgroundColor')=='rgb(255, 255, 0)'
+                        page.reload();page.wait_for_selector('mark.material-mark')
+                        page.locator('mark.material-mark').click()
+                        page.locator('#highlight-color').fill('#ff8800')
+                        page.locator('[data-highlight-save]').click()
+                        expect(page.locator('mark.material-mark')).to_have_attribute('data-color','#ff8800')
+                        assert page.locator('mark.material-mark').evaluate('el=>getComputedStyle(el).backgroundColor')=='rgb(255, 136, 0)'
+                        page.screenshot(path='/tmp/shenlun-highlight-paper-tested.png',full_page=True)
+                        page.locator('mark.material-mark').click();page.locator('[data-highlight-delete]').click()
+                        expect(page.locator('mark.material-mark')).to_have_count(0)
+                        # Native typing, formatting, undo, paste and IME confirmation keep the plain-text source.
+                        page.locator('#answer').fill('标题\n　　正文ABC123。')
+                        page.locator('#answer').evaluate('el=>el.setSelectionRange(1,1)')
+                        page.locator('[data-paper-format="center"]').click()
+                        assert page.locator('#answer').input_value().startswith('　'*11+'标题')
+                        page.locator('#answer').press('Control+z')
+                        expect(page.locator('#answer')).to_have_value('标题\n　　正文ABC123。')
+                        page.locator('#answer').fill('正文');page.locator('#answer').press('End');page.locator('#answer').press('Enter');page.keyboard.insert_text('换段内容')
+                        expect(page.locator('#answer')).to_have_value('正文\n　　换段内容')
+                        page.context.grant_permissions(['clipboard-read','clipboard-write'])
+                        page.evaluate("navigator.clipboard.writeText('粘贴中文\\n　　第二段')")
+                        page.locator('#answer').fill('');page.locator('#answer').press('Control+v')
+                        expect(page.locator('#answer')).to_have_value('粘贴中文\n　　第二段')
+                        page.locator('#answer').evaluate("""el=>{el.value='拼音';el.setSelectionRange(2,2);el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}));el.dispatchEvent(new InputEvent('input',{data:'拼音',inputType:'insertCompositionText',isComposing:true,bubbles:true}));el.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));}""")
+                        expect(page.locator('#answer')).to_have_value('拼音')
+                        page.locator('#answer').fill('甲\n'*15)
+                        expect(page.locator('#paper-warning')).to_contain_text('纸面超限')
+                        assert page.locator('.paper-overflow').count()>0
                     answer='加强基础建设，推动绿色创新；完善产业配套，提升竞争优势。'+str(index)
                     page.locator('#answer').fill(answer)
                     if index==0:
@@ -165,10 +216,31 @@ def main():
                     assert a['answer']==answer
                     assert a['mean_score']==[15,25,45][index]
                     answers.append(a)
+                    if index==0:
+                        # Re-generation changes only the selected model's reference, not its score or original answer.
+                        original_reference=a['grades'][0]['result']['high_score_answer']
+                        page.locator('[data-action="regenerate-reference"][data-direction="more"]').click()
+                        expect(page.locator('.reference-version option')).to_have_count(2,timeout=20000)
+                        page.locator('[data-action="regenerate-reference"][data-direction="less"]').click()
+                        expect(page.locator('.reference-version option')).to_have_count(3,timeout=20000)
+                        updated=httpx.get(base+'/api/attempts/'+aid).json()
+                        assert updated['mean_score']==a['mean_score'] and updated['answer']==a['answer']
+                        assert updated['grades'][0]['result']['high_score_answer']==original_reference
+                        assert updated['grades'][0]['references'][-1]['layout_check']['valid']
+                        page.locator('.reference-preview > summary').click()
+                        expect(page.locator('.paper-preview .paper-row')).to_have_count(expected['questions'][0]['paper_spec']['rows'])
+                        page.locator('.reference-version').select_option('original')
+                        expect(page.locator('.answer-reference')).to_have_text(original_reference)
+                        page.locator('[data-action="review-tab"]').nth(1).click()
+                        page.locator('[data-action="regenerate-reference"][data-direction="more"]').click()
+                        expect(page.locator('.reference-version option')).to_have_count(2,timeout=20000)
+                        expect(page.locator('[data-action="review-tab"].active')).to_contain_text('coach-b')
                 for context in received_contexts:
                     assert context['materials']==expected['questions'][context['number']-1]['materials']
                     assert 'MANUAL_PASSAGE_ONLY' not in json.dumps(context)
                     assert 'material_blocks' not in context
+                for context in received_reference_contexts:
+                    assert context['materials']==expected['questions'][context['number']-1]['materials']
                 assert counts['coach-a']==3,counts
                 assert counts['coach-b']==4,counts
                 page.goto(base+'/#profile');expect(page.locator('.forecast-total')).to_contain_text('85',timeout=20000)
@@ -179,8 +251,9 @@ def main():
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'mobile horizontal overflow'
                 page.screenshot(path='/tmp/shenlun-mobile.png',full_page=True)
                 assert not errors,errors
+                assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()
-            print('PASS: reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: persisted highlights/custom colors, 25-column paper/formatting/undo/paste/IME/overflow, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)

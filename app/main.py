@@ -10,9 +10,11 @@ from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Body
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from .db import Database, dumps
-from .schemas import ProviderInput, PaperInput, AttemptInput, KINDS
+from .schemas import ProviderInput, PaperInput, AttemptInput, RegenerateInput, HighlightInput, HighlightColor, KINDS
 from .pdf import extract_pdf, parse_text
-from .materials import prepare_paper
+from .materials import prepare_paper, model_question
+from .annotations import canonical_text
+from .paper import check_paper
 from .service import Service, uid, now, public_error
 from .llm import ModelError
 
@@ -157,6 +159,44 @@ def create_app(data_dir=None):
         if not q:
             raise HTTPException(404, '题目不存在')
         return {'paper':{k:p[k] for k in ('id','title','year','province','volume','confirmed')}, 'question':q}
+    def question_data(paper_id, question_id):
+        p = get_paper(paper_id)
+        q = next((q for q in p['questions'] if q['id']==question_id),None)
+        if not q:
+            raise HTTPException(404,'题目不存在')
+        return q
+    @app.get('/api/papers/{id}/questions/{question_id}/highlights')
+    def highlights(id: str, question_id: str):
+        q = question_data(id,question_id)
+        rows = db.rows('SELECT data,signature FROM highlights WHERE question_id=? ORDER BY rowid',(question_id,))
+        return {'signature':q['material_signature'], 'highlights':[json.loads(r['data']) for r in rows if r['signature']==q['material_signature']], 'outdated_count':sum(r['signature']!=q['material_signature'] for r in rows)}
+    @app.post('/api/papers/{id}/questions/{question_id}/highlights')
+    def add_highlight(id: str, question_id: str, value: HighlightInput):
+        q = question_data(id,question_id)
+        if value.signature != q['material_signature']:
+            raise HTTPException(409,'材料已发生变化，请刷新后重新选择；原有高亮已保留')
+        canonical = canonical_text(q['materials'])
+        if value.start>=value.end or value.end>len(canonical) or canonical[value.start:value.end]!=value.quote:
+            raise HTTPException(400,'所选文字与材料不匹配，请重新选择')
+        if db.rows('SELECT COUNT(*) AS n FROM highlights WHERE question_id=?',(question_id,))[0]['n']>=500:
+            raise HTTPException(400,'本题标注已达到500处，请先删除部分标注')
+        h = dict(value.model_dump(),id=uid(),question_id=question_id,paper_id=id,created_at=now(),updated_at=now())
+        h['color'] = h['color'].lower()
+        db.execute('INSERT INTO highlights VALUES(?,?,?,?)',(h['id'],question_id,value.signature,dumps(h)))
+        return h
+    @app.patch('/api/highlights/{id}')
+    def color_highlight(id: str, value: HighlightColor):
+        rows = db.rows('SELECT data FROM highlights WHERE id=?',(id,))
+        if not rows:
+            raise HTTPException(404,'标注不存在')
+        h = json.loads(rows[0]['data'])
+        h.update(color=value.color.lower(),updated_at=now())
+        db.execute('UPDATE highlights SET data=? WHERE id=?',(dumps(h),id))
+        return h
+    @app.delete('/api/highlights/{id}')
+    def delete_highlight(id: str):
+        db.execute('DELETE FROM highlights WHERE id=?',(id,))
+        return {'ok':True}
     @app.get('/api/papers/{id}/pdf')
     def paper_pdf(id: str):
         p = get_paper(id)
@@ -217,7 +257,7 @@ def create_app(data_dir=None):
                 raise HTTPException(409, '这份答案正在批改，请查看练习历史')
         safe = lambda model: {k:v for k,v in model.items() if k not in ('api_key','has_key')}
         id = uid()
-        a = dict(id=id, question_id=q['id'], paper_id=p['id'], question_snapshot=dict(q, source={k:p[k] for k in ('title','year','province','volume')}), answer=value.answer, providers=[safe(m) for m in models], master=safe(master), grades=[], mean_score=None, synthesis=None, status='queued', created_at=now())
+        a = dict(id=id, question_id=q['id'], paper_id=p['id'], question_snapshot=dict(q, source={k:p[k] for k in ('title','year','province','volume')}), answer=value.answer, answer_layout=check_paper(value.answer,q['paper_spec']), providers=[safe(m) for m in models], master=safe(master), grades=[], mean_score=None, synthesis=None, status='queued', created_at=now())
         db.put('attempts', id, a, a['created_at'])
         j = service.job('grading', id)
         service.launch(service.grade(j, id))
@@ -230,11 +270,35 @@ def create_app(data_dir=None):
         a = db.get('attempts', id)
         if not a:
             raise HTTPException(404, '记录不存在')
+        q = model_question(a['question_snapshot'])
+        a['paper_spec'] = q['paper_spec']
+        a['answer_layout'] = check_paper(a['answer'],q['paper_spec'])
+        for g in a['grades']:
+            if g['status']=='completed':
+                g['references'] = service.references(a,g)
         return a
+    def reference_running(attempt_id):
+        return any(j['kind']=='reference' and j.get('target_id')==attempt_id and j['status'] in ('queued','running') for j in db.all('jobs'))
+    @app.post('/api/attempts/{id}/references')
+    async def regenerate_reference(id: str, value: RegenerateInput):
+        a = attempt(id)
+        if a['status'] in ('queued','running') or reference_running(id):
+            raise HTTPException(409,'这份作答的任务正在执行，请完成后再生成范文')
+        g = next((g for g in a['grades'] if g['provider_id']==value.provider_id and g['status']=='completed'),None)
+        if not g:
+            raise HTTPException(400,'请选择一个已成功批改的模型')
+        service.provider(value.provider_id)
+        if not any(r['id']==value.reference_id for r in g['references']):
+            raise HTTPException(400,'所选范文版本不存在')
+        j = service.job('reference',id)
+        j.update(provider_id=value.provider_id,direction=value.direction)
+        db.put('jobs',j['id'],j)
+        service.launch(service.regenerate_reference(j,id,value.provider_id,value.direction,value.reference_id))
+        return j
     @app.post('/api/attempts/{id}/retry')
     async def retry(id: str):
         a = attempt(id)
-        if a['status'] in ('queued','running'):
+        if a['status'] in ('queued','running') or reference_running(id):
             raise HTTPException(409, '任务正在执行')
         if a['status'] == 'completed':
             raise HTTPException(400, '本次批改已全部成功，无需重试')
@@ -256,7 +320,7 @@ def create_app(data_dir=None):
         return j
     @app.get('/api/export')
     def export():
-        return Response(dumps({'version':1,'exported_at':now(),'papers':db.all('papers'),'attempts':db.all('attempts'),'portrait':db.setting('portrait')}), media_type='application/json',headers={'Content-Disposition':'attachment; filename="shenlun-history.json"'})
+        return Response(dumps({'version':1,'exported_at':now(),'papers':db.all('papers'),'attempts':db.all('attempts'),'portrait':db.setting('portrait'),'highlights':[json.loads(r['data']) for r in db.rows('SELECT data FROM highlights ORDER BY rowid')]}), media_type='application/json',headers={'Content-Disposition':'attachment; filename="shenlun-history.json"'})
     app.mount('/static', StaticFiles(directory=STATIC), name='static')
     return app
 

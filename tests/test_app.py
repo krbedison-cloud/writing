@@ -142,6 +142,120 @@ class AppTests(unittest.TestCase):
         p=self.client.put('/api/papers/'+p['id'],json=p).json()
         self.assertEqual(p['questions'][0]['materials'],'新的人工校对材料，具有不同内容。')
         self.assertEqual(self.client.get('/api/attempts/'+a['id']).json()['question_snapshot']['materials'],original)
+    def test_highlights_persist_colors_and_reject_stale_or_invalid_anchors(self):
+        from app.annotations import canonical_text
+        p=self.make_paper();q=p['questions'][0]
+        canonical=canonical_text(q['materials'])
+        path='/api/papers/'+p['id']+'/questions/'+q['id']+'/highlights'
+        data=dict(signature=q['material_signature'],start=0,end=5,quote=canonical[:5])
+        r=self.client.post(path,json=data);self.assertEqual(r.status_code,200,r.text)
+        h=r.json();self.assertEqual(h['color'],'#ffff00')
+        self.client.patch('/api/highlights/'+h['id'],json={'color':'#12AB34'})
+        self.assertEqual(self.client.get(path).json()['highlights'][0]['color'],'#12ab34')
+        self.assertEqual(len(self.client.get('/api/export').json()['highlights']),1)
+        changed=dict(data,quote='错误文字')
+        self.assertEqual(self.client.post(path,json=changed).status_code,400)
+        self.assertEqual(self.client.post(path,json=dict(data,color='red;bad')).status_code,422)
+        p['materials']='材料1\n已经改变的资料内容。'
+        self.client.put('/api/papers/'+p['id'],json=p)
+        current=self.client.get(path).json()
+        self.assertEqual(current['highlights'],[]);self.assertEqual(current['outdated_count'],1)
+        self.assertEqual(self.client.post(path,json=data).status_code,409)
+        self.client.delete('/api/highlights/'+h['id'])
+        self.assertEqual(self.client.get(path).json()['outdated_count'],0)
+    def test_reference_regeneration_keeps_scores_answers_and_old_versions(self):
+        p=self.make_paper();a=self.submit(p)
+        original=a['grades'][0]['result']['high_score_answer'];signature=self.client.get('/api/profile').json()['signature']
+        async def reference_model(provider,task,data):
+            if task.startswith('单独重写高分范文'):
+                answer='　　'+'甲'*(280 if data['direction']=='more' else 240)
+                return dict(high_score_answer=answer,high_score_self_check=dict(word_count=len(answer.strip()),used_rows=12 if data['direction']=='more' else 10,complies=True,format_note='已检查缩进与行数'))
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=reference_model):
+            for direction in ['more','less']:
+                current=self.client.get('/api/attempts/'+a['id']).json()
+                source=current['grades'][0]['references'][-1]['id']
+                r=self.client.post('/api/attempts/'+a['id']+'/references',json={'provider_id':self.master,'direction':direction,'reference_id':source})
+                self.assertEqual(r.status_code,200,r.text);self.assertEqual(self.wait_job(r.json()['id'])['status'],'completed')
+        updated=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(updated['mean_score'],a['mean_score'])
+        self.assertEqual(updated['finished_at'],a['finished_at']);self.assertEqual(updated['answer'],a['answer'])
+        self.assertEqual(updated['grades'][0]['result']['high_score_answer'],original)
+        refs=updated['grades'][0]['references'];self.assertEqual(len(refs),3)
+        self.assertTrue(refs[-1]['layout_check']['valid'])
+        self.assertEqual(self.client.get('/api/profile').json()['signature'],signature)
+    def test_invalid_reference_is_repaired_once_without_changing_grade(self):
+        p=self.make_paper()
+        async def responder(provider,task,data):
+            if task.startswith('独立批改'):
+                raw=grade(16);raw['high_score_answer']='甲\n'*20;return raw
+            if task.startswith('范文校正'):
+                return dict(high_score_answer='　　'+'甲'*280,high_score_self_check=dict(word_count=280,used_rows=12,complies=True,format_note='两格缩进，12行'))
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=responder) as mock:
+            a=self.submit(p)
+        self.assertEqual(a['status'],'completed');self.assertEqual(a['mean_score'],16)
+        refs=a['grades'][0]['references'];self.assertEqual(len(refs),2)
+        self.assertFalse(refs[0]['layout_check']['valid']);self.assertTrue(refs[1]['layout_check']['valid'])
+        self.assertEqual(sum(c.args[1].startswith('范文校正') for c in mock.call_args_list),1)
+        summary=next(c.args[2] for c in mock.call_args_list if c.args[1].startswith('汇总'))
+        self.assertNotIn('references',summary['reviews'][0]);self.assertNotIn('high_score_answer',summary['reviews'][0]['result'])
+    def test_reference_jobs_are_serialized_and_failures_preserve_original(self):
+        p=self.make_paper();a=self.submit(p)
+        body={'provider_id':self.master,'direction':'less','reference_id':'original'}
+        j=self.app.state.service.job('reference',a['id'])
+        self.assertEqual(self.client.post('/api/attempts/'+a['id']+'/references',json=body).status_code,409)
+        self.assertEqual(self.client.post('/api/attempts/'+a['id']+'/retry').status_code,409)
+        self.app.state.service.finish(j)
+        async def unavailable(provider,task,data):
+            if task.startswith('单独重写'):raise ModelError('接口返回 HTTP 429')
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=unavailable):
+            job=self.client.post('/api/attempts/'+a['id']+'/references',json=body).json()
+            self.assertEqual(self.wait_job(job['id'])['status'],'failed')
+        current=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(current['grades'][0]['references'],a['grades'][0]['references'])
+        self.assertEqual(current['mean_score'],a['mean_score'])
+    def test_unresolved_reference_overflow_is_visible_and_retry_is_bounded(self):
+        p=self.make_paper();a=self.submit(p)
+        async def bad_layout(provider,task,data):
+            if task.startswith(('单独重写','范文校正')):
+                return {'high_score_answer':'甲\n'*20,'high_score_self_check':{'word_count':20,'used_rows':1,'complies':True}}
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=bad_layout) as mock:
+            j=self.client.post('/api/attempts/'+a['id']+'/references',json={'provider_id':self.master,'direction':'less'}).json()
+            self.assertEqual(self.wait_job(j['id'])['status'],'completed')
+        current=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(current['mean_score'],a['mean_score'])
+        self.assertFalse(current['grades'][0]['references'][-1]['layout_check']['valid'])
+        self.assertEqual(sum(c.args[1].startswith(('单独重写','范文校正')) for c in mock.call_args_list),2)
+    def test_highlight_offsets_count_unicode_characters_and_survive_restart(self):
+        from app.annotations import canonical_text
+        p=self.make_paper();p['materials']='材料1\n甲😀乙 空格　末尾'
+        p=self.client.put('/api/papers/'+p['id'],json=p).json();q=p['questions'][0]
+        canonical=canonical_text(q['materials']);start=canonical.index('😀')
+        body=dict(signature=q['material_signature'],start=start,end=start+2,quote='😀乙')
+        r=self.client.post('/api/papers/'+p['id']+'/questions/'+q['id']+'/highlights',json=body)
+        self.assertEqual(r.status_code,200,r.text)
+        other=create_app(self.tmp.name)
+        stored=other.state.service.db.rows('SELECT data FROM highlights WHERE id=?',(r.json()['id'],))
+        self.assertEqual(json.loads(stored[0]['data'])['quote'],'😀乙')
+    def test_legacy_report_adds_local_paper_checks_without_model_calls_or_rewriting(self):
+        p=self.make_paper();a=self.submit(p)
+        for j in self.client.get('/api/jobs').json():
+            if j['kind']=='profile':self.wait_job(j['id'])
+        original=self.app.state.service.db.get('attempts',a['id'])
+        original.pop('answer_layout',None);original['question_snapshot'].pop('paper_spec',None)
+        for g in original['grades']:
+            g.pop('references',None);g['result'].pop('high_score_self_check',None)
+        self.app.state.service.db.put('attempts',original['id'],original,original['created_at'])
+        with patch('app.service.call_model',side_effect=AssertionError('Viewing history must not call a model')):
+            response=self.client.get('/api/attempts/'+a['id'])
+        self.assertEqual(response.status_code,200,response.text)
+        restored=response.json();self.assertEqual(restored['paper_spec']['rows'],14)
+        self.assertEqual(restored['mean_score'],original['mean_score'])
+        self.assertEqual(restored['grades'][0]['references'][0]['id'],'original')
+        self.assertEqual(self.app.state.service.db.get('attempts',a['id']),original)
     def test_import_confirmation_and_source_download(self):
         r=self.client.post('/api/papers/import',files={'file':('exam.pdf',pdf_bytes(),'application/pdf')}).json()
         self.assertFalse(r['confirmed'])

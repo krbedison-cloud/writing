@@ -31,7 +31,9 @@ class Database:
             CREATE TABLE IF NOT EXISTS attempts(id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            PRAGMA user_version=1;
+            CREATE TABLE IF NOT EXISTS highlights(id TEXT PRIMARY KEY, question_id TEXT NOT NULL, signature TEXT NOT NULL, data TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS highlights_question ON highlights(question_id,signature);
+            PRAGMA user_version=2;
             ''')
     @contextmanager
     def connect(self):

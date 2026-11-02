@@ -1,0 +1,69 @@
+/* Paper cells and annotation colors are laid out without injecting inline styles. */
+:root { --paper-cell: calc(var(--reading-size) + 4px); --paper-row: calc(var(--reading-size) + 12px); --paper-grid: #b5c5a7; }
+.paper-editor { display: flex; flex-direction: column; flex: 1 0 360px; min-height: 360px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.paper-toolbar { padding: 10px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: var(--bg); border-bottom: 1px solid var(--line); font-size: 13px; }
+.paper-toolbar strong { margin-right: auto; font-size: 14px; }
+.paper-format-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; }
+.paper-format-tools .btn, .paper-toolbar > .btn { font-size: 13px; min-height: 34px; padding: 5px 9px; }
+.paper-format-tools label { display: flex; align-items: center; gap: 5px; font-size: 13px; }
+.paper-viewport { min-height: 260px; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; background: var(--paper); }
+.paper-surface { position: relative; width: max-content; min-width: 100%; padding: 12px 12px 16px 0; }
+.paper-grid { width: max-content; user-select: none; touch-action: pan-x pan-y; }
+.paper-row { display: grid; grid-template-columns: 32px repeat(25, var(--paper-cell)); height: var(--paper-row); }
+.paper-row-number { display: grid; place-items: center; font-size: 11px; color: var(--muted); }
+.paper-cell { position: relative; display: grid; place-items: center; width: var(--paper-cell); height: var(--paper-row); border: 1px solid var(--paper-grid); border-right: 0; border-bottom: 0; font-family: var(--reading-font); font-size: var(--reading-size); line-height: 1; white-space: pre; color: var(--ink); cursor: text; }
+.paper-row .paper-cell:last-child { border-right: 1px solid var(--paper-grid); }
+.paper-row:last-child .paper-cell { border-bottom: 1px solid var(--paper-grid); }
+.paper-cell.paper-selected { background: #a5c8ed; color: #172f44; }
+.paper-cell.paper-overflow { background: #fce7e1; color: #8f3027; border-color: #cb7568; }
+.paper-caret::before { content: ''; position: absolute; left: 0; top: 5px; bottom: 5px; width: 2px; background: var(--ink); animation: paper-caret 1s step-end infinite; }
+.paper-caret-end::before { left: auto; right: 0; }
+@keyframes paper-caret { 50% { opacity: 0; } }
+#paper-editor[data-mode="grid"] #answer { position: absolute; left: 32px; top: 12px; width: 2px; min-width: 2px; height: var(--paper-row); min-height: 0; padding: 0; border: 0; resize: none; opacity: .01; color: transparent; caret-color: transparent; background: transparent; overflow: hidden; line-height: var(--paper-row); outline: 0; }
+#paper-editor[data-mode="plain"] .paper-surface { width: 100%; padding: 0; }
+#paper-editor[data-mode="plain"] #answer { position: static; width: 100%; min-height: 360px; height: 100%; resize: vertical; }
+.paper-hint { font-size: 13px; color: var(--muted); line-height: 1.8; }
+.paper-warning { color: #a13d30; font-size: 14px; white-space: pre-wrap; }
+.paper-check { padding: 14px 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); font-size: 14px; line-height: 1.9; }
+.paper-check.invalid { border-color: #cf8e76; background: #fcf0e5; color: #8b4330; }
+.reference-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 18px 0; }
+.reference-version { padding: 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 14px; background: var(--paper); color: var(--ink); max-width: 100%; }
+.reference-preview { margin-top: 14px; }
+.paper-preview { max-height: 540px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 14px 12px 18px 0; }
+.paper-preview .paper-grid { user-select: text; }
+.material-mark { border-radius: 2px; padding: 0; background: #ffff00; color: #101a12; cursor: pointer; }
+#material-toolbar { position: fixed; left: 8px; top: 100px; z-index: 80; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; max-width: calc(100vw - 16px); padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); box-shadow: 0 8px 30px #142c3238; font-size: 14px; }
+#material-toolbar label { display: flex; align-items: center; gap: 6px; }
+#highlight-color { width: 38px; height: 36px; padding: 2px; border: 1px solid var(--line); background: var(--paper); border-radius: 5px; }
+#highlight-count { font-size: 13px; color: var(--muted); margin-top: 8px; }
+:root[data-reading-theme="night"] { --paper-grid: #748a6a; }
+:root[data-reading-theme="night"] .paper-cell.paper-overflow { background: #4b302a; color: #f8bbab; }
+:root[data-reading-theme="night"] .paper-check.invalid { background: #49352b; color: #f0c4a4; }
+@media(max-width:760px) {
+  .paper-editor { min-height: 450px; }
+  .paper-viewport { max-height: 65dvh; }
+  .paper-toolbar { padding: 9px; }
+  .reference-actions .btn { flex: 1; }
+}
+@media(prefers-reduced-motion:reduce) { .paper-caret::before { animation: none; } }
+
+.paper-editor:focus-within { outline: 2px solid var(--green); outline-offset: 2px; }
+/* Keep all 25 cells at the chosen type size instead of shrinking Chinese characters. */
+.practice-grid:has(.paper-editor) { grid-template-columns: minmax(0,1fr) minmax(calc(25 * var(--paper-cell) + 112px),1.15fr); }
+@media(max-width:1359px) {
+  .practice-grid:has(.paper-editor) { grid-template-columns: 1fr; height: auto; }
+  .practice-grid:has(.paper-editor) .reading-pane,
+  .practice-grid:has(.paper-editor) .writing-pane { overflow: visible; }
+  .practice-grid:has(.paper-editor) .pane-scroll,
+  .practice-grid:has(.paper-editor) .answer-form { overflow: visible; }
+  .practice-grid:has(.paper-editor) .reading-pane .prose,
+  .practice-grid:has(.paper-editor) .material { margin-inline: auto; }
+  .paper-editor { flex: auto; min-height: 450px; }
+}
+@media(min-width:1280px) and (max-width:1359px) {
+  :root[data-focus="true"]:not([data-reading-layout="stacked"]) .practice-grid:has(.paper-editor) { grid-template-columns: minmax(0,1fr) minmax(calc(25 * var(--paper-cell) + 112px),1.15fr); height: max(480px,calc(100dvh - 252px)); }
+  :root[data-focus="true"]:not([data-reading-layout="stacked"]) .practice-grid .reading-pane,
+  :root[data-focus="true"]:not([data-reading-layout="stacked"]) .practice-grid .writing-pane { overflow: hidden; }
+  :root[data-focus="true"]:not([data-reading-layout="stacked"]) .practice-grid .pane-scroll,
+  :root[data-focus="true"]:not([data-reading-layout="stacked"]) .practice-grid .answer-form { overflow: auto; }
+}
