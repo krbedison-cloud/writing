@@ -1,6 +1,6 @@
 services:
   shenlun:
-    image: ${SHENLUN_IMAGE:-ghcr.io/krbedison-cloud/writing:v0.1.0}
+    image: ${SHENLUN_IMAGE:-ghcr.io/krbedison-cloud/writing:v0.1.1}
     ports:
       - "127.0.0.1:${APP_PORT:-8080}:8000"
     volumes:

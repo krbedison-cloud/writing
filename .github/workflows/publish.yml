@@ -2,7 +2,6 @@ name: Test and publish Docker image
 on:
   push:
     branches: [main]
-    tags: ['v*']
   workflow_dispatch:
 permissions:
   contents: read
@@ -23,14 +22,21 @@ jobs:
       - run: bash -n install.sh
       - run: docker compose -f compose.deploy.yaml config --quiet
   publish:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: test
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - name: Read release version
+        id: version
+        run: |
+          version="$(cat VERSION)"
+          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -44,7 +50,7 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest
-            type=ref,event=tag
+            type=raw,value=${{ steps.version.outputs.version }}
             type=sha
       - uses: docker/build-push-action@v6
         with:
@@ -56,24 +62,22 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Export prebuilt Docker images for public release downloads
-        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
           mkdir -p release
-          image="ghcr.io/${GITHUB_REPOSITORY,,}:$GITHUB_REF_NAME"
+          version="${{ steps.version.outputs.version }}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$version"
           for arch in arm64 amd64; do
             docker pull --platform "linux/$arch" "$image"
-            docker save "$image" | gzip > "release/shenlun-studio-$GITHUB_REF_NAME-linux-$arch.tar.gz"
+            docker save "$image" | gzip > "release/shenlun-studio-$version-linux-$arch.tar.gz"
           done
       - uses: actions/upload-artifact@v4
-        if: startsWith(github.ref, 'refs/tags/v')
         with:
           name: docker-images
           path: release/*.tar.gz
           compression-level: 0
           retention-days: 7
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
     needs: publish
     runs-on: ubuntu-latest
     permissions:
@@ -87,4 +91,5 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" --title "申论进阶 $GITHUB_REF_NAME" --generate-notes compose.deploy.yaml install.sh release/*.tar.gz
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: gh release create "$VERSION" --target "$GITHUB_SHA" --title "申论进阶 $VERSION" --generate-notes compose.deploy.yaml install.sh release/*.tar.gz
