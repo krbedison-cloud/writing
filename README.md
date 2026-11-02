@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh | bash
 ```
 
-安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.2` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
+安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.3` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
 
 配置保存在 `~/shenlun-studio/.env`，程序只监听本机 `18086` 端口；数据使用 Docker 数据卷 `shenlun-studio-data`。安装脚本会输出实际访问地址和停止命令。重复运行安装命令不会覆盖已有 `.env`；如版本配置文件已有人工修改，会停止而不是覆盖。发布的新版本可以通过再次执行安装命令更新，既有数据保留。
 
@@ -39,10 +39,34 @@ SHENLUN_DIR="$HOME/Applications/shenlun-studio" bash install-shenlun.sh
 公开镜像可直接拉取：
 
 ```bash
-docker pull ghcr.io/krbedison-cloud/writing:v0.1.2
+docker pull ghcr.io/krbedison-cloud/writing:v0.1.3
 ```
 
 GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架构镜像并创建对应标签的 Release。发布新版本时同步更新 VERSION、安装脚本默认版本与部署配置。GHCR 首次创建的包可能是私有的；仓库拥有者可到 GitHub 的 Packages → writing → Package settings 将包设为 Public，之后无需登录即可拉取。即使没有更改包的可见性，上面的安装器仍能使用公开 Release 中的预构建 Docker 镜像完成安装，不必登录 GHCR。
+
+## 局域网内访问
+
+在运行 Docker Desktop 的 Mac mini 上执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.3/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
+```
+
+安装器会保留已有数据和其他配置，持久设置 `APP_BIND=0.0.0.0`、`ALLOW_LAN=1` 以及指定端口。Docker 会在 Mac 所有 IPv4 接口监听 `18086`，应用允许以私有局域网 IP 访问；原来的主机白名单和同源写入检查仍有效。IP 变化后通常不需要重新配置白名单。
+
+完成后安装器会列出实际的局域网地址，例如 `http://192.168.1.20:18086`。同一局域网的其他电脑使用此地址；Mac mini 自己也能继续使用 `http://localhost:18086`。例子中的 IP 需要换成你自己的 Mac 地址。若没有自动显示，可在 Mac 系统设置 → 网络 → 当前连接 → 详细信息中查看 IP，或执行 `ipconfig getifaddr en0`。
+
+Mac 防火墙如提示 Docker 接收入站连接，选择允许。设备需要网络互通；访客 Wi-Fi、路由器的 AP 隔离或 VLAN 隔离可能阻止设备互访。若希望地址长期固定，可在路由器为 Mac 配置 DHCP 地址保留。
+
+所有访问者共用同一份题库、模型配置和练习历史，未实现独立用户账号。已有 `APP_PASSWORD` 原样保留，设置过密码时仍使用 `admin` 和原密码；可在 `~/shenlun-studio/.env` 设置或修改它，再运行安装器使其生效。局域网模式自动接受 RFC1918 IPv4、IPv4 链路本地和私有 IPv6 字面地址；使用自定义域名或其他 IP 时，另加到 `.env` 的 `ALLOWED_HOSTS` 中。
+
+恢复仅本机访问：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.3/install.sh | SHENLUN_LAN=0 bash
+```
+
+未指定 `SHENLUN_LAN` 时，保留现有的访问模式。
 
 ## 在 Mac mini 上启动
 
@@ -128,7 +152,7 @@ docker compose start
 
 完整恢复时，先停止服务，将备份内容放回 `/data` 并确保属主为容器用户 UID/GID `10001` 后再启动。应用内 JSON 导出适合阅读与归档，不包含密钥和原 PDF，**不是完整恢复包**。
 
-`.env` 可设置 `APP_PASSWORD`，浏览器会要求用户名 `admin` 和此密码。默认仅本机访问；如需局域网访问，应先设置密码，修改 Compose 端口绑定并将访问域名或 IP 加入 `ALLOWED_HOSTS`。不要直接暴露到公网；通过带 HTTPS 的反向代理访问时，需要配置正确的 Host 和转发协议。当前定位是单人私有应用，未实现多人账号与权限隔离。
+`.env` 可设置 `APP_PASSWORD`，浏览器会要求用户名 `admin` 和此密码。默认仅本机访问；局域网共享使用上面的 `SHENLUN_LAN=1` 安装命令，可按需设置访问密码。通过带 HTTPS 的反向代理访问时，需要配置正确的 Host 和转发协议。当前定位是单人私有应用，未实现多人账号与权限隔离。
 
 ## 本地开发与测试
 

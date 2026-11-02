@@ -45,7 +45,7 @@ exit 1
         self.temp.cleanup()
     def run_installer(self, port=None, extra=None):
         env=dict(os.environ, PATH=str(self.bin)+os.pathsep+os.environ['PATH'], SHENLUN_DIR=str(self.install))
-        for name in ['SHENLUN_VERSION','SHENLUN_PORT','APP_PORT']:
+        for name in ['SHENLUN_VERSION','SHENLUN_PORT','SHENLUN_LAN','APP_PORT','APP_BIND','ALLOW_LAN']:
             env.pop(name,None)
         if port is not None:
             env['SHENLUN_PORT']=port
@@ -68,6 +68,31 @@ exit 1
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual((self.install/'.env').read_text(),original.replace('APP_PORT=8080','APP_PORT=18086'))
         self.assertIn('http://localhost:18086',result.stdout)
+    def test_enable_lan_preserves_password_and_prints_mac_address(self):
+        original='APP_PORT=18086\nAPP_PASSWORD=example-only\nALLOWED_HOSTS=localhost,127.0.0.1\nCUSTOM_FLAG=keep\n'
+        (self.install/'.env').write_text(original)
+        for name,body in [('ifconfig','echo en0 en1 lo0'),('ipconfig','[ "$2" = en0 ] && echo 192.168.50.20')]:
+            executable=self.bin/name
+            executable.write_text('#!/bin/sh\n'+body+'\n')
+            executable.chmod(0o755)
+        result=self.run_installer(extra={'SHENLUN_LAN':'1','APP_BIND':'127.0.0.1','ALLOW_LAN':'0'})
+        self.assertEqual(result.returncode,0,result.stderr)
+        actual=(self.install/'.env').read_text()
+        self.assertEqual(actual,original+'APP_BIND=0.0.0.0\nALLOW_LAN=1\n')
+        self.assertIn('http://192.168.50.20:18086',result.stdout)
+    def test_disable_lan_restores_local_binding(self):
+        (self.install/'.env').write_text('APP_PORT=18086\nAPP_BIND=0.0.0.0\nALLOW_LAN=1\nAPP_PASSWORD=example-only\n')
+        result=self.run_installer(extra={'SHENLUN_LAN':'0'})
+        self.assertEqual(result.returncode,0,result.stderr)
+        actual=(self.install/'.env').read_text()
+        self.assertIn('APP_BIND=127.0.0.1\nALLOW_LAN=0\n',actual)
+        self.assertIn('APP_PASSWORD=example-only\n',actual)
+    def test_invalid_lan_mode_leaves_configuration_untouched(self):
+        original='APP_PORT=18086\nAPP_PASSWORD=example-only\n'
+        (self.install/'.env').write_text(original)
+        result=self.run_installer(extra={'SHENLUN_LAN':'invalid'})
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual((self.install/'.env').read_text(),original)
     def test_invalid_port_does_not_change_existing_config(self):
         original='APP_PORT=8080\nAPP_PASSWORD=example-only\n'
         (self.install/'.env').write_text(original)

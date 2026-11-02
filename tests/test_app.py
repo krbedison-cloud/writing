@@ -202,6 +202,24 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/profile/refresh',headers={'Origin':'https://attacker.example'},json={'provider_id':self.master}).status_code,403)
         self.assertEqual(self.client.get('/',headers={'Host':'attacker.example'}).status_code,403)
         self.assertEqual(self.client.get('/').status_code,200)
+    def test_lan_mode_accepts_private_hosts_and_same_origin_writes(self):
+        with patch.dict(os.environ,{'ALLOW_LAN':'1','APP_PASSWORD':'','ALLOWED_HOSTS':'localhost,127.0.0.1'}):
+            for host in ['192.168.50.20:18086','10.0.0.2:18086','172.16.0.2:18086','[fd00::123]:18086']:
+                with self.subTest(host=host):
+                    self.assertEqual(self.client.get('/api/papers',headers={'Host':host}).status_code,200)
+            headers={'Host':'192.168.50.20:18086','Origin':'http://192.168.50.20:18086'}
+            body={'name':'LAN coach','protocol':'openai','base_url':'https://api.example.com/v1','model':'model'}
+            self.assertEqual(self.client.post('/api/providers',headers=headers,json=body).status_code,200)
+            headers['Origin']='https://attacker.example'
+            self.assertEqual(self.client.post('/api/providers',headers=headers,json=body).status_code,403)
+            for host in ['attacker.example:18086','8.8.8.8:18086','172.32.0.1:18086']:
+                self.assertEqual(self.client.get('/api/papers',headers={'Host':host}).status_code,403)
+    def test_lan_off_rejects_private_host_and_lan_on_preserves_password(self):
+        with patch.dict(os.environ,{'ALLOW_LAN':'0','APP_PASSWORD':'','ALLOWED_HOSTS':'localhost,127.0.0.1'}):
+            self.assertEqual(self.client.get('/api/papers',headers={'Host':'192.168.50.20:18086'}).status_code,403)
+        with patch.dict(os.environ,{'ALLOW_LAN':'1','APP_PASSWORD':'example-password'}):
+            self.assertEqual(self.client.get('/api/papers',headers={'Host':'192.168.50.20:18086'}).status_code,401)
+            self.assertEqual(self.client.get('/api/papers',headers={'Host':'192.168.50.20:18086'},auth=('admin','example-password')).status_code,200)
     def test_password_and_health(self):
         with patch.dict(os.environ,{'APP_PASSWORD':'example-password'}):
             self.assertEqual(self.client.get('/api/providers').status_code,401)

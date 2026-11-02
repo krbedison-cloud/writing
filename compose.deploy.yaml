@@ -1,11 +1,12 @@
 services:
   shenlun:
-    image: ${SHENLUN_IMAGE:-ghcr.io/krbedison-cloud/writing:v0.1.2}
+    image: ${SHENLUN_IMAGE:-ghcr.io/krbedison-cloud/writing:v0.1.3}
     ports:
-      - "127.0.0.1:${APP_PORT:-18086}:8000"
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-18086}:8000"
     volumes:
       - shenlun-data:/data
     environment:
+      ALLOW_LAN: ${ALLOW_LAN:-0}
       APP_PASSWORD: ${APP_PASSWORD:-}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
       TZ: Asia/Shanghai

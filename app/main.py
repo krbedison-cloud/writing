@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ipaddress
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -15,6 +16,24 @@ from .service import Service, uid, now, public_error
 from .llm import ModelError
 
 STATIC = Path(__file__).parent / 'static'
+LAN_NETWORKS = tuple(ipaddress.ip_network(cidr) for cidr in (
+    '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16',
+    'fc00::/7', 'fe80::/10',
+))
+
+def permitted_host(host):
+    allowed = {h.strip().lower() for h in os.getenv('ALLOWED_HOSTS','localhost,127.0.0.1,testserver').split(',')}
+    host = (host or '').lower()
+    if host in allowed:
+        return True
+    if os.getenv('ALLOW_LAN', '0') != '1':
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(address.version == network.version and address in network for network in LAN_NETWORKS)
+
 
 def create_app(data_dir=None):
     db = Database(data_dir or os.getenv('DATA_DIR', str(Path(__file__).resolve().parent.parent / 'data')))
@@ -45,8 +64,7 @@ def create_app(data_dir=None):
             if not valid:
                 return Response(status_code=401, headers={'WWW-Authenticate':'Basic realm="Shenlun", charset="UTF-8"'})
         # Guard against browser cross-site writes and DNS rebinding on local deployments.
-        allowed = os.getenv('ALLOWED_HOSTS','localhost,127.0.0.1,testserver').split(',')
-        if request.url.hostname not in allowed:
+        if not permitted_host(request.url.hostname):
             return JSONResponse({'detail':'访问主机未列入 ALLOWED_HOSTS'}, status_code=403)
         origin = request.headers.get('origin')
         if request.method not in ('GET','HEAD','OPTIONS') and origin and origin != str(request.base_url).rstrip('/'):
