@@ -112,6 +112,36 @@ class AppTests(unittest.TestCase):
         self.assertEqual(r.status_code,200,r.text)
         j=self.wait_job(r.json()['job_id'])
         return self.client.get('/api/attempts/'+r.json()['attempt_id']).json()
+    def test_question_scoped_api_and_model_payloads(self):
+        from test_materials import MATERIALS
+        p=self.make_paper();p['materials']=MATERIALS
+        p['questions'][0]['prompt']='根据资料3，写一份简报，字数不超过350字。'
+        p['questions'][1]['prompt']='根据资料8、9，写一则短评，不超过600字。'
+        p['questions'][2]['prompt']='结合给定资料，写一篇1000-1200字的议论性文章。'
+        p=self.client.put('/api/papers/'+p['id'],json=p).json()
+        self.assertEqual([q['material_scope']['matched_ids'] for q in p['questions']],[[3],[8,9],list(range(1,10))])
+        focused=self.client.get('/api/papers/'+p['id']+'/questions/'+p['questions'][0]['id']).json()
+        self.assertNotIn('PASSAGE_1_ONLY',json.dumps(focused))
+        a=self.submit(p)
+        self.assertIn('PASSAGE_3_ONLY',a['question_snapshot']['materials'])
+        self.assertNotIn('PASSAGE_1_ONLY',a['question_snapshot']['materials'])
+        calls=[c for c in self.mock.call_args_list if c.args[1].startswith(('独立批改','汇总'))]
+        self.assertEqual(len(calls),2)
+        for call in calls:
+            payload=call.args[2]
+            self.assertIn('PASSAGE_3_ONLY',payload['question']['materials'])
+            self.assertNotIn('PASSAGE_1_ONLY',json.dumps(payload))
+            self.assertNotIn(p['questions'][1]['prompt'],json.dumps(payload,ensure_ascii=False))
+            self.assertNotIn('custom_materials',payload['question'])
+        summary=calls[-1].args[2]
+        self.assertNotIn('high_score_answer',summary['reviews'][0]['result'])
+        self.assertIn('high_score_answer',a['grades'][0]['result'])
+        # Editing the source paper later must not change the submitted evidence snapshot.
+        original=a['question_snapshot']['materials']
+        p['questions'][0].update(material_mode='custom',custom_materials='新的人工校对材料，具有不同内容。')
+        p=self.client.put('/api/papers/'+p['id'],json=p).json()
+        self.assertEqual(p['questions'][0]['materials'],'新的人工校对材料，具有不同内容。')
+        self.assertEqual(self.client.get('/api/attempts/'+a['id']).json()['question_snapshot']['materials'],original)
     def test_import_confirmation_and_source_download(self):
         r=self.client.post('/api/papers/import',files={'file':('exam.pdf',pdf_bytes(),'application/pdf')}).json()
         self.assertFalse(r['confirmed'])

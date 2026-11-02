@@ -20,12 +20,14 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from app.schemas import DIMENSIONS
 
 counts={}
+received_contexts=[]
 class MockModel(BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def do_POST(self):
         body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         data=json.loads(body['messages'][-1]['content']);task=data['task'];payload=data['data'];model=body['model']
         if task.startswith('独立批改'):
+            received_contexts.append(payload['question'])
             counts[model]=counts.get(model,0)+1
             if model=='coach-b' and counts[model]==1:
                 self.send_response(429);self.end_headers();self.wfile.write(b'mock rate limit');return
@@ -85,10 +87,29 @@ def main():
                 page.locator('[data-action="edit-paper"]').first.click();page.locator('[name="confirmed"]').check();page.locator('#paper-form button[type="submit"]').click()
                 expect(page.locator('#editor')).not_to_be_visible()
                 paperid=page.url.split('/')[-1]
+                expected=httpx.get(base+'/api/papers/'+paperid).json()
+                # Edit a manual scope and restore automatic matching through the actual UI.
+                page.locator('[data-action="edit-paper"]').first.click()
+                first=page.locator('.edit-q').first
+                first.locator('[name="material_mode"]').select_option('custom')
+                first.locator('[name="custom_materials"]').fill('MANUAL_PASSAGE_ONLY 这是仅用于第一题的校对材料。')
+                page.locator('#paper-form button[type="submit"]').click()
+                expect(page.locator('#editor')).not_to_be_visible()
+                page.locator('a[href^="#practice/"]').first.click()
+                expect(page.locator('#question-materials')).to_have_text('MANUAL_PASSAGE_ONLY 这是仅用于第一题的校对材料。')
+                page.goto(base+'/#paper/'+paperid)
+                page.locator('[data-action="edit-paper"]').first.click()
+                page.locator('.edit-q').first.locator('[name="material_mode"]').select_option('auto')
+                page.locator('#paper-form button[type="submit"]').click()
+                expect(page.locator('#editor')).not_to_be_visible()
+                expected=httpx.get(base+'/api/papers/'+paperid).json()
+                if args.pdf:
+                    assert [q['material_scope']['matched_ids'] for q in expected['questions']]==[[3],[8,9],list(range(1,10))]
                 answers=[]
                 for index in range(3):
                     if index:page.goto(base+'/#paper/'+paperid)
                     page.locator('a[href^="#practice/"]').nth(index).click()
+                    expect(page.locator('#question-materials')).to_have_text(expected['questions'][index]['materials'])
                     answer='加强基础建设，推动绿色创新；完善产业配套，提升竞争优势。'+str(index)
                     page.locator('#answer').fill(answer)
                     page.reload();expect(page.locator('#answer')).to_have_value(answer)
@@ -110,6 +131,10 @@ def main():
                     assert a['answer']==answer
                     assert a['mean_score']==[15,25,45][index]
                     answers.append(a)
+                for context in received_contexts:
+                    assert context['materials']==expected['questions'][context['number']-1]['materials']
+                    assert 'MANUAL_PASSAGE_ONLY' not in json.dumps(context)
+                    assert 'material_blocks' not in context
                 assert counts['coach-a']==3,counts
                 assert counts['coach-b']==4,counts
                 page.goto(base+'/#profile');expect(page.locator('.forecast-total')).to_contain_text('85',timeout=20000)
@@ -121,7 +146,7 @@ def main():
                 page.screenshot(path='/tmp/shenlun-mobile.png',full_page=True)
                 assert not errors,errors
                 browser.close()
-            print('PASS: browser import, confirmation, three answers, draft reload, parallel HTTP grading, partial retry, mean score, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)

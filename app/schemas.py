@@ -27,8 +27,17 @@ class QuestionInput(BaseModel):
     word_min: int = Field(default=0, ge=0, le=5000)
     word_max: int = Field(default=0, ge=0, le=5000)
     classification_note: str = Field(default="人工校对", max_length=600)
+    material_mode: Literal["auto", "selected", "all", "custom"] = "auto"
+    material_ids: list[int] = Field(default_factory=list, max_length=100)
+    custom_materials: str = Field(default="", max_length=160000)
     @model_validator(mode="after")
     def limits(self):
+        if any(not 1 <= id <= 999 for id in self.material_ids):
+            raise ValueError("资料编号必须在 1–999 之间")
+        if self.material_mode == 'selected' and not self.material_ids:
+            raise ValueError("请至少选择一段资料")
+        if self.material_mode == 'custom' and not self.custom_materials.strip():
+            raise ValueError("人工材料不能为空")
         if self.word_max and self.word_min > self.word_max:
             raise ValueError("最少字数不能超过最多字数")
         return self

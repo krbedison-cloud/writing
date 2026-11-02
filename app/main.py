@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from .db import Database, dumps
 from .schemas import ProviderInput, PaperInput, AttemptInput, KINDS
 from .pdf import extract_pdf, parse_text
+from .materials import prepare_paper
 from .service import Service, uid, now, public_error
 from .llm import ModelError
 
@@ -116,7 +117,12 @@ def create_app(data_dir=None):
             raise HTTPException(400, public_error(exc))
     @app.get('/api/papers')
     def papers():
-        return [{k:v for k,v in p.items() if k not in ('raw_text','materials')} for p in db.all('papers')]
+        result = []
+        for p in db.all('papers'):
+            summary = {k:v for k,v in p.items() if k not in ('raw_text','materials','material_blocks')}
+            summary['questions'] = [{k:v for k,v in q.items() if k not in ('materials','custom_materials')} for q in p['questions']]
+            result.append(summary)
+        return result
     @app.post('/api/papers/import')
     async def import_paper(file: UploadFile = File(...)):
         content = await file.read(25 * 1024 * 1024 + 1)
@@ -140,10 +146,17 @@ def create_app(data_dir=None):
         p = db.get('papers', id)
         if not p:
             raise HTTPException(404, '试卷不存在')
-        return p
+        return prepare_paper(p)
     @app.get('/api/papers/{id}')
     def paper(id: str):
         return get_paper(id)
+    @app.get('/api/papers/{id}/questions/{question_id}')
+    def question(id: str, question_id: str):
+        p = get_paper(id)
+        q = next((q for q in p['questions'] if q['id'] == question_id), None)
+        if not q:
+            raise HTTPException(404, '题目不存在')
+        return {'paper':{k:p[k] for k in ('id','title','year','province','volume','confirmed')}, 'question':q}
     @app.get('/api/papers/{id}/pdf')
     def paper_pdf(id: str):
         p = get_paper(id)
@@ -162,6 +175,7 @@ def create_app(data_dir=None):
         for q in v['questions']:
             q['id'] = old.get(q['number'], uid())
         p.update(v)
+        p = prepare_paper(p)
         db.put('papers', id, p, p['created_at'])
         return p
     @app.post('/api/papers/{id}/classify')
@@ -189,7 +203,9 @@ def create_app(data_dir=None):
         found = [(p,q) for p in db.all('papers') for q in p['questions'] if q['id'] == value.question_id]
         if not found:
             raise HTTPException(404, '题目不存在')
-        p, q = found[0]
+        p, old_q = found[0]
+        p = prepare_paper(p)
+        q = next(q for q in p['questions'] if q['id'] == old_q['id'])
         if not p['confirmed']:
             raise HTTPException(400, '请先校对并确认试卷')
         ids = list(dict.fromkeys(value.provider_ids))
@@ -201,7 +217,7 @@ def create_app(data_dir=None):
                 raise HTTPException(409, '这份答案正在批改，请查看练习历史')
         safe = lambda model: {k:v for k,v in model.items() if k not in ('api_key','has_key')}
         id = uid()
-        a = dict(id=id, question_id=q['id'], paper_id=p['id'], question_snapshot=dict(q, materials=p['materials'], source={k:p[k] for k in ('title','year','province','volume')}), answer=value.answer, providers=[safe(m) for m in models], master=safe(master), grades=[], mean_score=None, synthesis=None, status='queued', created_at=now())
+        a = dict(id=id, question_id=q['id'], paper_id=p['id'], question_snapshot=dict(q, source={k:p[k] for k in ('title','year','province','volume')}), answer=value.answer, providers=[safe(m) for m in models], master=safe(master), grades=[], mean_score=None, synthesis=None, status='queued', created_at=now())
         db.put('attempts', id, a, a['created_at'])
         j = service.job('grading', id)
         service.launch(service.grade(j, id))

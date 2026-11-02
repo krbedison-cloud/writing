@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh | bash
 ```
 
-安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.3` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
+安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.4` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
 
 配置保存在 `~/shenlun-studio/.env`，程序只监听本机 `18086` 端口；数据使用 Docker 数据卷 `shenlun-studio-data`。安装脚本会输出实际访问地址和停止命令。重复运行安装命令不会覆盖已有 `.env`；如版本配置文件已有人工修改，会停止而不是覆盖。发布的新版本可以通过再次执行安装命令更新，既有数据保留。
 
@@ -39,7 +39,7 @@ SHENLUN_DIR="$HOME/Applications/shenlun-studio" bash install-shenlun.sh
 公开镜像可直接拉取：
 
 ```bash
-docker pull ghcr.io/krbedison-cloud/writing:v0.1.3
+docker pull ghcr.io/krbedison-cloud/writing:v0.1.4
 ```
 
 GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架构镜像并创建对应标签的 Release。发布新版本时同步更新 VERSION、安装脚本默认版本与部署配置。GHCR 首次创建的包可能是私有的；仓库拥有者可到 GitHub 的 Packages → writing → Package settings 将包设为 Public，之后无需登录即可拉取。即使没有更改包的可见性，上面的安装器仍能使用公开 Release 中的预构建 Docker 镜像完成安装，不必登录 GHCR。
@@ -49,7 +49,7 @@ GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架
 在运行 Docker Desktop 的 Mac mini 上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.3/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.4/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
 ```
 
 安装器会保留已有数据和其他配置，持久设置 `APP_BIND=0.0.0.0`、`ALLOW_LAN=1` 以及指定端口。Docker 会在 Mac 所有 IPv4 接口监听 `18086`，应用允许以私有局域网 IP 访问；原来的主机白名单和同源写入检查仍有效。IP 变化后通常不需要重新配置白名单。
@@ -63,7 +63,7 @@ Mac 防火墙如提示 Docker 接收入站连接，选择允许。设备需要�
 恢复仅本机访问：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.3/install.sh | SHENLUN_LAN=0 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.4/install.sh | SHENLUN_LAN=0 bash
 ```
 
 未指定 `SHENLUN_LAN` 时，保留现有的访问模式。
@@ -90,12 +90,28 @@ docker compose down                  # 停止，保留数据
 ## 使用流程
 
 1. **模型设置**：添加任意数量接口，每个配置对应一个具体模型。输入名称、协议、API 根地址、模型 ID、密钥并测试连接。相同服务商的不同模型可以分别添加。
-2. **真题练习 → 导入 PDF**：提取文字；扫描页使用内置 Tesseract 中文 OCR。规则自动识别年份、省份、卷别与题目。也可选择模型进行 AI 识别；这会将完整试卷文本发送给该模型。
+2. **真题练习 → 导入 PDF**：提取文字；扫描页使用内置 Tesseract 中文 OCR。规则自动识别年份、省份、卷别与题目，并按题干引用关联各题材料。也可选择模型进行 AI 识别；这会将完整试卷文本发送给该模型。
 3. **校对试卷**：核对原题、给定材料、来源、字数和训练档。可调整题型、增减题目。勾选确认后开始作答。自动识别结果始终需要确认，不会把不确定的题目当作正确答案。
 4. **作答**：浏览材料，输入答案；当前浏览器自动保留草稿。勾选多位批改模型（单次最多 12 位），选择一位主模型，提交后原答案立即存档。
 5. **批改报告**：各模型独立打分，提供六维评价、具体扣分证据、改进建议与自己的参考范文；主模型基于这些结果和你的原答案进行汇总。程序计算有效模型的算术均分和最高最低分差。
 6. **练习历史**：回看每次原答案、当时题干与材料快照、模型身份、评价与范文。修改试卷或模型名称不会改写既有结果。支持导出全部试卷和历史 JSON（不含 API Key）。
 7. **能力与竞争力**：每次有效批改后，主模型自动分析全部历史摘要，更新长期诊断；数值统计即时更新。也可手动更新文字诊断。
+
+### 每题单独使用材料
+
+上传后按“材料1 / 资料一”等标题拆分段落，并读取每道题的引用范围，支持“资料3”“资料8、9”“材料一至三”等常见写法。使用提供的 2026 浙江 A 卷实测：
+
+| 题目 | 使用的材料 | 材料长度（字符） |
+|---|---|---:|
+| 第一题短简报 | 仅资料 3 | 1129，较整卷 8159 减少约 86% |
+| 第二题短评 | 仅资料 8、9 | 2410，减少约 70% |
+| 第三题大作文 | 按题干要求使用全部材料 | 8159 |
+
+答题页仅加载并展示当前题的材料与题干；每位模型的批改输入仅包含本题材料、题干、原答案和评分规则，不再发送其他题目或无关资料。主模型汇总复用相同材料，并接收各模型的评价；参考范文完整存档和展示，但不重复塞入汇总请求。上表比较的是材料字符长度，不是实际 token 或费用统计。
+
+在“校对试卷”中，每题可选择自动匹配、手动勾选资料编号、全部材料，或人工粘贴本题材料。引用缺失、段落标题重复或无法可靠拆分时，页面会提示核对并保留全文，避免悄悄漏掉依据；可手工修正后再提交。
+
+升级后，旧试卷自动补上材料关联，不需要重新上传；已存档的答案、题干与材料快照不被改写。之后修改材料选择只影响新作答，每次提交都会保存当时实际使用的材料。
 
 ### 训练档与预估方式
 

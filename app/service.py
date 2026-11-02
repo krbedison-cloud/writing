@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pydantic import ValidationError
 from .db import dumps
 from .llm import call_model, ModelError
+from .materials import prepare_paper, model_question
 from .schemas import Grade, Synthesis, Portrait, PaperInput, DIMENSIONS, KINDS
 
 def now():
@@ -34,6 +35,10 @@ class Service:
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
     def recover(self):
+        for paper in self.db.all('papers'):
+            if paper.get('materials_version') != 1:
+                prepared = prepare_paper(paper)
+                self.db.put('papers', prepared['id'], prepared, prepared['created_at'])
         for table in ('jobs', 'attempts'):
             for row in self.db.all(table):
                 if row['status'] in ('queued', 'running'):
@@ -68,6 +73,7 @@ class Service:
             for q in parsed['questions']:
                 q['id'] = old_ids.get(q['number'], uid())
             paper.update(parsed, confirmed=False)
+            paper = prepare_paper(paper)
             self.db.put('papers', paper_id, paper, paper['created_at'])
             self.finish(j)
         except Exception as exc:
@@ -77,7 +83,7 @@ class Service:
         a.update(status='running', error=None)
         self.db.put('attempts', a['id'], a, a['created_at'])
         self.stage(j, '各模型独立批改中')
-        q = a['question_snapshot']
+        q = model_question(a['question_snapshot'])
         full = KINDS[q['kind']][1]
         async def one(pid):
             if any(g['provider_id'] == pid and g['status'] == 'completed' for g in a['grades']):
@@ -112,7 +118,7 @@ class Service:
                     master = self.provider(a['master']['id'])
                     if (master['model'], master['base_url'], master['protocol']) != (a['master']['model'], a['master']['base_url'], a['master']['protocol']):
                         raise ModelError('主模型配置已改变，请恢复原配置或重新提交')
-                    raw = await self.ask(master, '汇总多位教练的批改，返回 {analysis,consensus,disagreements,action_plan}。analysis为详细诊断文字，其余为字符串数组。识别共识和分歧，检验批评是否有原文证据，不盲信多数。均分已由程序计算，不改分。优先给出下一次能执行的修改动作。', {'question':q,'answer':a['answer'],'mean_score':a['mean_score'],'successful_count':len(good),'requested_count':len(a['providers']),'reviews':good})
+                    raw = await self.ask(master, '汇总多位教练的批改，返回 {analysis,consensus,disagreements,action_plan}。analysis为详细诊断文字，其余为字符串数组。识别共识和分歧，检验批评是否有原文证据，不盲信多数。均分已由程序计算，不改分。优先给出下一次能执行的修改动作。', {'question':q,'answer':a['answer'],'mean_score':a['mean_score'],'successful_count':len(good),'requested_count':len(a['providers']),'reviews':[{k:v for k,v in g.items() if k != 'result'} | {'result':{k:v for k,v in g['result'].items() if k != 'high_score_answer'}} for g in good]})
                     a['synthesis'] = Synthesis.model_validate(raw).model_dump()
                     a['status'] = 'completed' if len(good) == len(a['providers']) else 'partial'
                 except Exception as exc:

@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 import fitz
 from .schemas import PaperInput, QuestionInput
+from .materials import prepare_paper
 
 PROVINCES = '浙江 江苏 安徽 福建 江西 山东 山西 陕西 河南 河北 湖北 湖南 广东 广西 四川 重庆 云南 贵州 海南 黑龙江 吉林 辽宁 内蒙古 宁夏 青海 甘肃 新疆 西藏 北京 天津 上海 台湾 香港 澳门'.split()
 
@@ -92,6 +93,7 @@ def parse_text(text, filename):
     province = next((p for p in PROVINCES if p in meta), '待确认')
     vol = re.search(r'[（(]([^（）()\n]{1,12}卷)[）)]', meta)
     title = Path(filename).stem[:180]
-    return PaperInput(title=title, year=yr[1] if yr else '待确认', province=province,
+    parsed = PaperInput(title=title, year=yr[1] if yr else '待确认', province=province,
                       volume=vol[1] if vol else '待确认', materials=cleaned[:split] if split >= 0 else cleaned,
                       questions=questions).model_dump()
+    return prepare_paper(parsed)
