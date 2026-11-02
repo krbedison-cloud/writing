@@ -69,7 +69,7 @@ jobs:
           image="ghcr.io/${GITHUB_REPOSITORY,,}:$version"
           for arch in arm64 amd64; do
             docker pull --platform "linux/$arch" "$image"
-            docker save "$image" | gzip > "release/shenlun-studio-$version-linux-$arch.tar.gz"
+            docker save --platform "linux/$arch" "$image" | gzip > "release/shenlun-studio-$version-linux-$arch.tar.gz"
           done
       - uses: actions/upload-artifact@v4
         with:
