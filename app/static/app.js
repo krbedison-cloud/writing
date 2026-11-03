@@ -138,24 +138,65 @@ async function history(){
 }
 function historyTable(rows){return rows.length?`<table><thead><tr><th>时间</th><th>来源与题目</th><th>训练档</th><th>均分</th><th>状态</th><th></th></tr></thead><tbody>${rows.map(a=>`<tr><td>${esc(date(a.created_at))}</td><td><div class="source">${esc(a.source.title)}</div><span class="tiny muted">第 ${a.question_number} 题 · ${a.answer_length} 字</span></td><td>${badge(kinds[a.kind])}</td><td><b>${a.mean_score??'—'}</b><span class="muted tiny"> / ${full[a.kind]}</span></td><td>${badge(statuses[a.status],a.status==='completed'?'':a.status==='running'?'blue':'amber')}</td><td><a class="link" href="#attempt/${a.id}">查看 →</a></td></tr>`).join('')}</tbody></table>`:empty('还没有练习记录','开始一次作答，让努力留下痕迹。','<a class="btn small" href="#papers">前往真题库</a>');}
 async function attemptView(id){
- const a=await api('/attempts/'+id);state.attempt=a;const q=a.question_snapshot,good=a.grades.filter(g=>g.status==='completed');const activeReview=good.find(g=>g.provider_id===state.reviewProvider)||good[0];
+ const token=state.routeToken,a=await api('/attempts/'+id);
+ if(token!==state.routeToken)return '';
+ if(state.attempt?.id!==id){state.reviewProvider=null;state.referenceVersions={};}
+ state.attempt=a;return renderAttempt(a);
+}
+function renderAttempt(a){
+ const q=a.question_snapshot,good=a.providers.map(p=>a.grades.find(g=>g.provider_id===p.id&&g.status==='completed')).filter(Boolean);
+ const activeReview=good.find(g=>g.provider_id===state.reviewProvider)||good[0];
+ if(activeReview)state.reviewProvider=activeReview.provider_id;
  const busy=['queued','running'].includes(a.status);
- return head('这一次，离更好的自己近一点',sourceText(q.source)+' · 第 '+q.number+' 题 · '+date(a.created_at),`<a class="btn" href="#history">返回历史</a>${!busy&&a.status!=='completed'?btn('retry','重试失败项','primary'):''}`,'REVIEW & REFLECTION')+
+ return '<div id="attempt-progress">'+head('这一次，离更好的自己近一点',sourceText(q.source)+' · 第 '+q.number+' 题 · '+date(a.created_at),`<a class="btn" href="#history">返回历史</a>${!busy&&a.status!=='completed'?btn('retry','重试失败项','primary'):''}`,'REVIEW & REFLECTION')+
  (busy?'<div class="notice"><span class="busy-dot"></span>各模型正在独立批改，随后由主模型汇总。你可以离开此页，后台会继续执行。</div>':'')+
+ (!a.grading_policy||a.grades.some(g=>g.status==='completed'&&!g.grading_policy)?'<div class="notice warn">此记录使用旧版批改提示。若评价与题干不符，可保留本记录，并回原题使用原答案重新提交批改。</div>':'')+
  (a.error?`<div class="notice error">${esc(a.error)}</div>`:'')+
  `<div class="score-cards"><div class="score-card"><p>有效批改均分</p><div class="score">${a.mean_score??'—'}<small> / ${full[q.kind]}</small></div><span class="tiny muted">${good.length} / ${a.providers.length} 个模型成功 · 分差 ${a.score_spread??'—'}</span></div>${a.providers.map(p=>{const g=a.grades.find(g=>g.provider_id===p.id);return `<div class="score-card"><p>${esc(p.name)}</p>${g?.status==='completed'?`<div class="score">${g.result.score}<small> / ${full[q.kind]}</small></div>`:badge(g?'失败':'等待中',g?'red':'blue')}<span class="tiny muted">${esc(p.model)}</span>${g?.error?`<p class="small">${esc(g.error)}</p>`:''}</div>`}).join('')}</div>`+
  (a.status==='partial'?'<div class="notice warn">仅成功模型参与均分。失败项未被算作零分；可重试失败项，成功项不会重复调用。</div>':'')+
- `<div class="grid-main"><div class="stack"><section class="card"><div class="card-head"><h2>主模型 · 汇总诊断</h2>${badge(a.master.name)}</div>${a.synthesis?`<div class="prose">${esc(a.synthesis.analysis)}</div><div class="grade-section"><h3>教练们的共识</h3>${list(a.synthesis.consensus)}<h3>需要辨别的分歧</h3>${a.synthesis.disagreements.length?list(a.synthesis.disagreements):'<p class="small muted">本次未报告明显分歧。</p>'}<h3>下一次，就这样改</h3>${list(a.synthesis.action_plan)}</div>`:empty(busy?'诊断正在路上':'尚无汇总诊断',busy?'先认真写，再一起看清得失。':'请检查失败原因后重试。')}</section></div><section class="card"><div class="card-head"><h2>当时的原答案</h2>${badge(kinds[q.kind])}</div><div class="prose">${esc(a.answer)}</div><details class="plain-details"><summary>查看本次题干与材料快照</summary><div class="prose">${esc(q.prompt)}</div><h3 class="section-gap">${esc(q.material_scope?.note||'当时存档的材料')}</h3><div class="material reading-text">${readingText(q.materials)}</div></details><a class="btn small section-gap" href="#practice/${a.paper_id}/${a.question_id}">再练一次 ${icon('arrow')}</a></section></div>`+
- `<section class="card section-gap"><div class="card-head"><h2>每位教练的详细批改与参考范文</h2><span class="subtitle">AI 生成 · 非官方标准答案</span></div>${good.length?`<div class="tabs">${good.map((g,i)=>`<button data-action="review-tab" data-id="${g.provider_id}" class="${g.provider_id===activeReview?.provider_id?'active':''}">${esc(g.name)} · ${g.result.score} 分</button>`).join('')}</div><div id="review-body">${reviewBody(activeReview)}</div>`:empty('等待第一份批改结果','各模型的评分、证据与范文会在这里分别呈现。')}</section>`;
+ `</div><div class="grid-main"><div class="stack"><section class="card" id="attempt-synthesis"><div class="card-head"><h2>主模型 · 汇总诊断</h2>${badge(a.master.name)}</div>${a.synthesis?`<div class="prose">${esc(a.synthesis.analysis)}</div><div class="grade-section"><h3>教练们的共识</h3>${list(a.synthesis.consensus)}<h3>需要辨别的分歧</h3>${a.synthesis.disagreements.length?list(a.synthesis.disagreements):'<p class="small muted">本次未报告明显分歧。</p>'}<h3>下一次，就这样改</h3>${list(a.synthesis.action_plan)}</div>`:empty(busy?'诊断正在路上':'尚无汇总诊断',busy?'先认真写，再一起看清得失。':'请检查失败原因后重试。')}</section></div><section class="card"><div class="card-head"><h2>当时的原答案</h2>${badge(kinds[q.kind])}</div><div class="prose">${esc(a.answer)}</div><details class="plain-details"><summary>查看本次题干与材料快照</summary><div class="prose">${esc(q.prompt)}</div><h3 class="section-gap">${esc(q.material_scope?.note||'当时存档的材料')}</h3><div class="material reading-text">${readingText(q.materials)}</div></details><a class="btn small section-gap" href="#practice/${a.paper_id}/${a.question_id}">再练一次 ${icon('arrow')}</a></section></div>`+
+ `<section class="card section-gap"><div class="card-head"><h2>每位教练的详细批改与参考范文</h2><span class="subtitle">AI 生成 · 非官方标准答案</span></div><div id="review-tabs" class="tabs">${good.map(g=>`<button data-action="review-tab" data-id="${g.provider_id}" class="${g.provider_id===activeReview?.provider_id?'active':''}">${esc(g.name)} · ${g.result.score} 分</button>`).join('')}</div><div id="review-body">${activeReview?reviewBody(activeReview):empty('等待第一份批改结果','各模型的评分、证据与范文会在这里分别呈现。')}</div></section>`;
 }
-function reviewBody(g){const r=g.result;return `<div class="row between wrap"><h3>${esc(g.name)} <span class="tiny muted">${esc(g.model)}</span></h3><span class="tiny muted">范文来自此模型，未由主模型改写</span></div><div class="row wrap section-gap">${dimensions.map(k=>badge(k+' '+r.dimensions[k])).join(' ')}</div><div class="grid-main grade-section"><div><h3>值得保持</h3>${list(r.strengths)}<h3>不足与扣分依据</h3>${list(r.weaknesses)}${list(r.evidence)}</div><div><h3>具体改法</h3>${list(r.suggestions)}</div></div>${referenceBody(g)}`;}
+function reviewBody(g){const r=g.result;return `<div class="row between wrap"><h3>${esc(g.name)} <span class="tiny muted">${esc(g.model)}</span></h3><span class="tiny muted">范文来自此模型，未由主模型改写</span></div>${r.task_analysis?`<div class="paper-check section-gap"><h3>本题审题 · ${esc(r.task_analysis.genre)}</h3><p>${esc(r.task_analysis.task)}</p><h4>题干要求</h4>${list(r.task_analysis.requirements)}<h4>本题材料依据</h4>${list(r.task_analysis.material_basis)}</div>`:''}<div class="row wrap section-gap">${dimensions.map(k=>badge(k+' '+r.dimensions[k])).join(' ')}</div><div class="grid-main grade-section"><div><h3>值得保持</h3>${list(r.strengths)}<h3>不足与扣分依据</h3>${list(r.weaknesses)}${list(r.evidence)}</div><div><h3>具体改法</h3>${list(r.suggestions)}</div></div>${referenceBody(g)}`;}
 function referenceBody(g){
  const refs=g.references||[{id:'original',answer:g.result.high_score_answer,model_self_check:g.result.high_score_self_check,direction:'initial',created_at:state.attempt.created_at}];
  const selected=state.referenceVersions[g.provider_id];const ref=refs.find(r=>r.id===selected)||refs.at(-1);
  const spec=state.attempt.paper_spec||PaperLayout.specFor(state.attempt.question_snapshot),check=ref.layout_check||PaperLayout.check(ref.answer,spec),self=ref.model_self_check;
  const running=state.jobs.some(j=>j.kind==='reference'&&j.target_id===state.attempt.id&&['queued','running'].includes(j.status));
  const mismatch=self&&(self.word_count!==check.word_count||self.used_rows!==check.used_rows);
- return `<h3>高分参考答案 · ${esc(g.name)}</h3><div class="paper-check ${check.valid?'':'invalid'} section-gap"><b>程序占格校验：${check.valid?'符合字数及纸面限制':'需要修订'}</b><br>${check.word_count} 字 · 占用 ${check.used_rows}/${spec.rows} 行（每行25格） · 含缩进和换行空耗 ${check.formatting_cells} 格${check.reasons.length?'<br>'+check.reasons.map(esc).join('；'):''}<br><span class="small">模型自检：${self?`${self.word_count} 字 / ${self.used_rows} 行 · ${self.complies?'自报符合':'自报需修订'} · ${esc(self.format_note||'已返回自检')}`:'未提供有效自检，以上为程序按本软件格纸规则计算'}${mismatch?' · 模型计数与程序不同，以程序核验为准':''}</span>${ref.repair_error?'<br>'+esc('自动修订未完成：'+ref.repair_error):''}</div><div class="reference-actions"><button type="button" class="btn" data-action="regenerate-reference" data-direction="more" data-provider="${g.provider_id}" data-reference="${ref.id}" ${running?'disabled':''}>字数少了</button><button type="button" class="btn" data-action="regenerate-reference" data-direction="less" data-provider="${g.provider_id}" data-reference="${ref.id}" ${running?'disabled':''}>字数多了</button><label class="small">版本 <select class="reference-version" data-provider="${g.provider_id}" aria-label="范文版本">${refs.map((v,i)=>option(v.id,(i===0?'原始范文':v.direction==='more'?'补充字数':v.direction==='less'?'压缩字数':'自动修订')+' · '+date(v.created_at),v.id===ref.id)).join('')}</select></label></div><p class="paper-hint">${running?'正在单独生成范文，请稍候。':'仅重新生成此模型的范文，不改分数和批评意见；超限时最多自动修订1次，按接口实际计费。'}</p><div class="answer-reference prose">${esc(ref.answer)}</div><details class="plain-details reference-preview" data-provider="${g.provider_id}" data-reference="${ref.id}"><summary>查看25格纸面预览</summary><div class="reference-paper-target"></div></details>`;
+ return `<h3>高分参考答案 · ${esc(g.name)}</h3><div class="paper-check ${check.valid?'':'invalid'} section-gap"><b>程序占格校验：${check.valid?'符合字数及纸面限制':'需要修订'}</b><br>${check.word_count} 字 · 占用 ${check.used_rows}/${spec.rows} 行（每行25格） · 含缩进和换行空耗 ${check.formatting_cells} 格${check.reasons.length?'<br>'+check.reasons.map(esc).join('；'):''}<br><span class="small">模型自检：${self?`${self.word_count} 字 / ${self.used_rows} 行 · ${self.complies?'自报符合':'自报需修订'} · ${esc(self.format_note||'已返回自检')}`:'未提供有效自检，以上为程序按本软件格纸规则计算'}${mismatch?' · 模型计数与程序不同，以程序核验为准':''}</span>${ref.repair_error?'<br>'+esc('自动修订未完成：'+ref.repair_error):''}</div><div class="reference-actions"><button type="button" class="btn" data-action="regenerate-reference" data-direction="more" data-provider="${g.provider_id}" data-reference="${ref.id}" ${running?'disabled':''}>字数少了</button><button type="button" class="btn" data-action="regenerate-reference" data-direction="less" data-provider="${g.provider_id}" data-reference="${ref.id}" ${running?'disabled':''}>字数多了</button><label class="small">版本 <select class="reference-version" data-provider="${g.provider_id}" aria-label="范文版本">${refs.map((v,i)=>option(v.id,(i===0?'原始范文':v.direction==='more'?'补充字数':v.direction==='less'?'压缩字数':'自动修订')+' · '+date(v.created_at),v.id===ref.id)).join('')}</select></label></div><p class="paper-hint">${running?'正在单独生成范文，请稍候。':'仅重新生成此模型的范文，不改分数和批评意见；超限时最多自动修订1次，按接口实际计费。'}</p><div class="reference-layout"><section><h4>范文原文</h4><div class="answer-reference prose">${esc(ref.answer)}</div></section><section class="reference-preview" data-provider="${g.provider_id}" data-reference="${ref.id}"><h4>25格纸面 · 当前范文</h4><div class="reference-paper-target"></div></section></div>`;
+}
+const liveMarkup=new Map();
+const liveRegions=['attempt-progress','attempt-synthesis','review-tabs','review-body'];
+function mountReferencePapers(){
+ $$('.reference-preview').forEach(panel=>{
+  const target=$('.reference-paper-target',panel);if(!target||target.childNodes.length)return;
+  const g=state.attempt?.grades.find(g=>g.provider_id===panel.dataset.provider);
+  const refs=g?.references||[];const ref=refs.find(r=>r.id===panel.dataset.reference);
+  if(ref)target.append(GridPaper.preview(ref.answer,state.attempt.paper_spec));
+  else if(g)target.append(GridPaper.preview(g.result.high_score_answer,state.attempt.paper_spec));
+ });
+}
+function updateLiveRegion(id,html){
+ const node=document.getElementById(id);if(!node)return;
+ const template=document.createElement('template');template.innerHTML=html;const canonical=template.innerHTML;
+ if(liveMarkup.get(id)===canonical)return;
+ node.replaceChildren(template.content);liveMarkup.set(id,canonical);
+}
+function setReviewBody(g){updateLiveRegion('review-body',reviewBody(g));mountReferencePapers();}
+function primeAttempt(){
+ liveMarkup.clear();for(const id of liveRegions){const node=document.getElementById(id);if(node)liveMarkup.set(id,node.innerHTML);}
+ mountReferencePapers();
+}
+let attemptRefreshToken=0;
+async function refreshAttempt(){
+ const hash=location.hash,token=state.routeToken,id=hash.slice(1).split('/')[1];
+ if(!hash.startsWith('#attempt/')||state.attempt?.id!==id||!$('#attempt-progress'))return;
+ const refresh=++attemptRefreshToken,a=await api('/attempts/'+id);
+ if(hash!==location.hash||token!==state.routeToken||refresh!==attemptRefreshToken)return;
+ state.attempt=a;const template=document.createElement('template');template.innerHTML=renderAttempt(a);
+ for(const id of liveRegions){const node=template.content.querySelector('#'+id);if(node)updateLiveRegion(id,node.innerHTML);}
+ mountReferencePapers();
 }
 async function models(){return head('找到适合你的 AI 教练','连接不同视角，让每一份评价都经得起对照。',btn('add-model',`${icon('plus')} 添加接口`,'primary'),'MODEL CONNECTIONS')+
  '<div class="notice">支持任意数量的接口配置：OpenAI 兼容（含 DeepSeek、通义、硅基流动与 Ollama）、Anthropic Claude、Google Gemini。API Key 在服务器本地加密保存，浏览器只能看到是否已设置。</div>'+
@@ -197,6 +238,7 @@ async function route(quiet=false){
   if(token!==state.routeToken)return;
   $('#main').innerHTML=content;
   if(view==='practice')mountPractice();
+  if(view==='attempt')primeAttempt();
   if(!quiet)window.scrollTo(0,0);
  }catch(e){if(token===state.routeToken)$('#main').innerHTML=head('暂时无法打开',e.message,'<a class="btn" href="#overview">回到概览</a>');}
 }
@@ -224,15 +266,15 @@ async function act(el){const action=el.dataset.action;
  if(action==='edit-paper')return paperEditor();
  if(action==='add-question'){$('#questions-editor').insertAdjacentHTML('beforeend',questionEditor({number:$$('.edit-q').length+1,kind:'summary',word_min:0,word_max:0}));return;}
  if(action==='remove-question'){el.closest('.edit-q').remove();return;}
- if(action==='review-tab'){state.reviewProvider=el.dataset.id;$$('[data-action="review-tab"]').forEach(b=>b.classList.toggle('active',b===el));$('#review-body').innerHTML=reviewBody(state.attempt.grades.find(g=>g.provider_id===el.dataset.id));return;}
+ if(action==='review-tab'){state.reviewProvider=el.dataset.id;$$('[data-action="review-tab"]').forEach(b=>b.classList.toggle('active',b===el));setReviewBody(state.attempt.grades.find(g=>g.provider_id===el.dataset.id));return;}
  if(action==='delete-model'){if(!confirm('删除这个接口配置？已有批改结果仍保留，未完成任务可能需要重新配置。'))return;await api('/providers/'+el.dataset.id,{method:'DELETE'});toast('接口已删除，历史批改保留');return route(true);}
  if(action==='test-model'){await post('/providers/'+el.dataset.id+'/test');toast('连接成功，模型已返回有效结果');return;}
  if(action==='classify-paper'){
   if(!confirm('AI 识别将替换当前试卷的题干与归类，已有历史记录仍保留。是否继续？'))return;
   await post('/papers/'+state.paper.id+'/classify',{provider_id:$('#classify-provider').value});toast('AI 识别已开始，完成后自动刷新');return;
  }
- if(action==='regenerate-reference'){state.reviewProvider=el.dataset.provider;delete state.referenceVersions[el.dataset.provider];const j=await post('/attempts/'+state.attempt.id+'/references',{provider_id:el.dataset.provider,direction:el.dataset.direction,reference_id:el.dataset.reference});state.jobs=[j,...state.jobs];toast('已开始单独重写范文，原批改分数保留');return route(true);}
- if(action==='retry'){await post('/attempts/'+state.attempt.id+'/retry');toast('开始重试失败项');return route(true);}
+ if(action==='regenerate-reference'){state.reviewProvider=el.dataset.provider;delete state.referenceVersions[el.dataset.provider];const j=await post('/attempts/'+state.attempt.id+'/references',{provider_id:el.dataset.provider,direction:el.dataset.direction,reference_id:el.dataset.reference});state.jobs=[j,...state.jobs];toast('已开始单独重写范文，原批改分数保留');return refreshAttempt();}
+ if(action==='retry'){await post('/attempts/'+state.attempt.id+'/retry');toast('开始重试失败项');return refreshAttempt();}
  if(action==='refresh-profile'){
   const id=localStorage.getItem('master')||state.providers[0]?.id;
   if(!id)throw Error('请先添加模型接口');
@@ -274,7 +316,7 @@ document.addEventListener('input',event=>{
 });
 document.addEventListener('change',event=>{
  const el=event.target;
- if(el.classList.contains('reference-version')){state.referenceVersions[el.dataset.provider]=el.value;$('#review-body').innerHTML=reviewBody(state.attempt.grades.find(g=>g.provider_id===el.dataset.provider));}
+ if(el.classList.contains('reference-version')){state.referenceVersions[el.dataset.provider]=el.value;setReviewBody(state.attempt.grades.find(g=>g.provider_id===el.dataset.provider));}
  if(el.id?.startsWith('reading-')){const key=el.id.slice(8);if(READING_OPTIONS[key])applyReadingPreferences({...readingPreferences,[key]:el.value});}
  if(el.name==='provider'&&$('#grading-summary'))$('#grading-summary').textContent='· 已选 '+$$('#answer-form [name="provider"]:checked').length+' 位教练';
  if(el.name==='material_mode'){const q=el.closest('.edit-q');$('[data-material-selection]',q).hidden=el.value!=='selected';$('[data-custom-materials]',q).hidden=el.value!=='custom';}
@@ -299,14 +341,13 @@ async function poll(){
   const changed=jobs.filter(j=>(previousJobs.has(j.id)?previousJobs.get(j.id)!==j.status:j.kind==='reference')&&!['queued','running'].includes(j.status));
   previousJobs=new Map(jobs.map(j=>[j.id,j.status]));
   const view=location.hash.slice(1).split('/')[0];
-  if(view==='attempt'&&state.attempt&&['queued','running'].includes(state.attempt.status)&&!$('#editor').open)await route(true);
-  else if(view==='attempt'&&changed.some(j=>j.kind==='reference'&&j.target_id===state.attempt?.id)&&!$('#editor').open)await route(true);
+  if(view==='attempt'&&state.attempt&&['queued','running'].includes(state.attempt.status)&&!$('#editor').open)await refreshAttempt();
+  else if(view==='attempt'&&changed.some(j=>j.kind==='reference'&&j.target_id===state.attempt?.id)&&!$('#editor').open)await refreshAttempt();
   else if(changed.length&&!$('#editor').open&&['profile','overview','history','paper'].includes(view))await route(true);
   for(const j of changed)if(j.status==='failed')toast(j.error||'任务失败，请查看详情');
  }catch{/* Keep entered answers intact during transient disconnections. */}
  setTimeout(poll,2500);
 }
-document.addEventListener('toggle',event=>{const detail=event.target;if(!detail.matches?.('.reference-preview')||!detail.open)return;const g=state.attempt.grades.find(g=>g.provider_id===detail.dataset.provider);const r=g.references.find(r=>r.id===detail.dataset.reference);const target=$('.reference-paper-target',detail);if(r&&!target.childNodes.length)target.append(GridPaper.preview(r.answer,state.attempt.paper_spec));},true);
 document.addEventListener('click',event=>{const menu=$('#reading-menu');if(menu.open&&!menu.contains(event.target))menu.open=false;});
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('dialog[open]')&&$('#material-toolbar').hidden){if($('#reading-menu').open)$('#reading-menu').open=false;else if(focused)setFocusMode(false);}});
 restoreReadingPreferences();route();poll();

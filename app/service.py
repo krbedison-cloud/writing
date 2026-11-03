@@ -12,6 +12,10 @@ from .materials import prepare_paper, model_question
 from .schemas import Grade, Synthesis, Portrait, PaperInput, ReferenceDraft, DIMENSIONS, KINDS
 from .paper import check_paper
 
+GRADING_POLICY = 'question-first-v1'
+QUESTION_FIRST = '以question.prompt的完整题干为准，先辨明任务、作答对象、文体、内容范围、格式及字数，再从question.materials提炼可核验的评分要点，最后逐项对照用户answer。kind只表示20/30/50分训练档，不代表文体。题干未要求的标题、称呼、落款、日期不得强加；格式只在本题任务确需时评价。不得用其他题目、旧批改或固定文体模板替代本题。题干有歧义须说明不确定性，不能臆造缺失要求。'
+TASK_RUBRIC = '从本题题干和材料制定评分细则，区分内容要点、分析论证、结构表达及本题确需的文体格式；每项扣分必须说明它对应的题干要求、材料依据和用户原答证据。'
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -93,7 +97,7 @@ class Service:
         if reference['layout_check']['valid']:
             return None
         try:
-            raw = await self.ask(provider, '范文校正。只重写高分参考答案，不重新批改用户作答。返回 {high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。先自行逐字计数并计算25格纸面占用，再返回纯文本范文。保留必要标题、称呼、段首空两格、落款、日期，用全角空格表示对齐，不使用Markdown，不在范文末尾附字数说明。必须同时满足字数上下限和答题纸行数；消除多余空行，不能靠省略必要格式作弊。', {'question':q,'previous_answer':reference['answer'],'actual_check':reference['layout_check']})
+            raw = await self.ask(provider, '范文校正。'+QUESTION_FIRST+'只重写高分参考答案，不重新批改用户作答。返回 {high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。先自行逐字计数并计算25格纸面占用，再返回纯文本范文。格式仅按本题题干所需设置，不强加标题、称呼、落款或日期，用全角空格表示必要缩进和对齐，不使用Markdown，不在范文末尾附字数说明。必须同时满足字数上下限和答题纸行数；消除多余空行，不能靠省略必要格式作弊。', {'question':q,'previous_answer':reference['answer'],'actual_check':reference['layout_check']})
             draft = ReferenceDraft.model_validate(raw).model_dump()
             return self.reference(draft,q,direction='auto_repair')
         except Exception as exc:
@@ -118,7 +122,7 @@ class Service:
             ceiling = spec['word_max'] or spec['cells']
             target = min(ceiling,max(words+max(20,round(words*.15)),spec['word_min'])) if direction=='more' else max(spec['word_min'],min(ceiling,round(words*.82)))
             task = '单独重写高分范文。用户认为上版字数少了，请适度补充有效要点与论证。' if direction=='more' else '单独重写高分范文。用户认为上版字数多了，请压缩冗余、合并不必要换行。'
-            raw = await self.ask(provider, task+'只返回 {high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}，不重新评分、不输出对用户原答的批改。范文按指定文体使用必要标题、称呼、落款与日期，段首以实际两个全角空格缩进；先逐字和逐行自检，必须同时满足字数与25格答题纸行数。返回纯文本，禁止Markdown及范文内的字数说明。', {'question':q,'previous_answer':previous['answer'],'previous_check':previous['layout_check'],'target_word_count':target,'direction':direction})
+            raw = await self.ask(provider, task+QUESTION_FIRST+'只返回 {high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}，不重新评分、不输出对用户原答的批改。范文文体及格式只依本题任务，不强加题干未要求的标题、称呼、落款与日期，必要缩进使用实际全角空格；先逐字和逐行自检，必须同时满足字数与25格答题纸行数。返回纯文本，禁止Markdown及范文内的字数说明。', {'question':q,'previous_answer':previous['answer'],'previous_check':previous['layout_check'],'target_word_count':target,'direction':direction})
             candidate = self.reference(ReferenceDraft.model_validate(raw).model_dump(),q,direction)
             versions.append(candidate)
             repaired = await self.repair_reference(provider,q,candidate)
@@ -135,7 +139,7 @@ class Service:
             self.finish(j,public_error(exc))
     async def grade(self, j, attempt_id):
         a = self.db.get('attempts', attempt_id)
-        a.update(status='running', error=None)
+        a.update(status='running', error=None, grading_policy=GRADING_POLICY)
         self.db.put('attempts', a['id'], a, a['created_at'])
         self.stage(j, '各模型独立批改中')
         q = model_question(a['question_snapshot'])
@@ -144,13 +148,13 @@ class Service:
             if any(g['provider_id'] == pid and g['status'] == 'completed' for g in a['grades']):
                 return
             snapshot = next(p for p in a['providers'] if p['id'] == pid)
-            g = dict(provider_id=pid, name=snapshot['name'], model=snapshot['model'], status='failed')
+            g = dict(provider_id=pid, name=snapshot['name'], model=snapshot['model'], status='failed', grading_policy=GRADING_POLICY)
             try:
                 p = self.provider(pid)
                 # Never silently substitute a different model into an existing attempt.
                 if (p['model'], p['base_url'], p['protocol']) != (snapshot['model'], snapshot['base_url'], snapshot['protocol']):
                     raise ModelError('模型配置已改变，请新建作答；不能将新模型混入旧批改')
-                raw = await self.ask(p, '独立批改。返回 {score,dimensions,strengths,weaknesses,suggestions,evidence,high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。score 是本题训练满分内分数；dimensions 为六个指定维度各0–100。strengths、weaknesses、suggestions、evidence 为字符串数组，high_score_self_check 为前述自检对象；evidence 必须引用原答案并解释扣分。范文须自行逐字计数、自检文体格式与25格答题纸占用行数（paper_spec），同时满足两项上限。标题、称呼、落款、日期均计字，空格和换行损失占格；用实际全角空格表示缩进和对齐，范文纯文本，不要Markdown或字数说明。短简报虽在20分训练档仍按简报文体评价。', {'full_score':full, 'dimensions':DIMENSIONS, 'rubric': {'summary':'重点考察要点完整准确、分类概括与材料依据；短简报须同时保留标题和简报层次，禁止因训练档为概括题而忽略文体。', 'practical':'重点考察对象与目的、指定文体、材料转化与可执行性；短评考察观点鲜明及短篇论证。', 'essay':'重点考察中心论点、分论点与论证深度、事实材料与现实联系、全文结构和表达。'}[q['kind']], 'calibration':'优秀应满足题目核心要求且有充分材料或论证支撑；指出缺失与具体扣分理由，不因语言华丽忽略离题。自行拟定评分细则并保持一致；这不是官方阅卷。', 'question':q, 'answer':a['answer'], 'answer_layout':check_paper(a['answer'],q['paper_spec'])})
+                raw = await self.ask(p, '独立批改。审题分析task_analysis中，task为本题任务，genre为本题所需文体（无固定文体则明确说明），requirements逐条摘录或忠实概述题干要求，material_basis引用本题材料并说明对应要点。返回单个JSON对象 {task_analysis:{task,genre,requirements,material_basis},score,dimensions,strengths,weaknesses,suggestions,evidence,high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。score 是本题训练满分内分数；dimensions 为六个指定维度各0–100。strengths、weaknesses、suggestions、evidence 为字符串数组，high_score_self_check 为前述自检对象；evidence 必须引用原答案并解释扣分。范文须自行逐字计数、自检文体格式与25格答题纸占用行数（paper_spec），同时满足两项上限。标题、称呼、落款、日期均计字，空格和换行损失占格；用实际全角空格表示缩进和对齐，范文纯文本，不要Markdown或字数说明。'+QUESTION_FIRST, {'full_score':full, 'dimensions':DIMENSIONS, 'rubric': TASK_RUBRIC, 'grading_policy': GRADING_POLICY, 'calibration':'优秀应满足题目核心要求且有充分材料或论证支撑；指出缺失与具体扣分理由，不因语言华丽忽略离题。自行拟定评分细则并保持一致；这不是官方阅卷。', 'question':q, 'answer':a['answer'], 'answer_layout':check_paper(a['answer'],q['paper_spec'])})
                 result = Grade.model_validate(raw)
                 if result.score > full:
                     raise ModelError(f'模型分数超过本题 {full} 分满分，结果未计入均分')
@@ -178,7 +182,7 @@ class Service:
                     master = self.provider(a['master']['id'])
                     if (master['model'], master['base_url'], master['protocol']) != (a['master']['model'], a['master']['base_url'], a['master']['protocol']):
                         raise ModelError('主模型配置已改变，请恢复原配置或重新提交')
-                    raw = await self.ask(master, '汇总多位教练的批改，返回 {analysis,consensus,disagreements,action_plan}。analysis为详细诊断文字，其余为字符串数组。识别共识和分歧，检验批评是否有原文证据，不盲信多数。均分已由程序计算，不改分。优先给出下一次能执行的修改动作。', {'question':q,'answer':a['answer'],'answer_layout':check_paper(a['answer'],q['paper_spec']),'mean_score':a['mean_score'],'successful_count':len(good),'requested_count':len(a['providers']),'reviews':[{k:g[k] for k in ('provider_id','name','model','status')} | {'result':{k:v for k,v in g['result'].items() if k not in ('high_score_answer','high_score_self_check')}} for g in good]})
+                    raw = await self.ask(master, '汇总多位教练的批改，先以本题题干、材料和用户原答核验每位教练的审题与扣分依据；若有文体误判、强加格式或引用无关材料，须明确指出并排除其诊断影响，不把错误当共识。返回 {analysis,consensus,disagreements,action_plan}。analysis为详细诊断文字，其余为字符串数组。识别共识和分歧，检验批评是否有原文证据，不盲信多数。均分已由程序计算，不改分。优先给出下一次能执行的修改动作。', {'question':q,'answer':a['answer'],'answer_layout':check_paper(a['answer'],q['paper_spec']),'mean_score':a['mean_score'],'successful_count':len(good),'requested_count':len(a['providers']),'reviews':[{k:g[k] for k in ('provider_id','name','model','status')} | {'result':{k:v for k,v in g['result'].items() if k not in ('high_score_answer','high_score_self_check')}} for g in good]})
                     a['synthesis'] = Synthesis.model_validate(raw).model_dump()
                     a['status'] = 'completed' if len(good) == len(a['providers']) else 'partial'
                 except Exception as exc:

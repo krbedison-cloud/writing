@@ -97,7 +97,14 @@ class HighlightInput(BaseModel):
 class HighlightColor(BaseModel):
     color: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
 
+class TaskAnalysis(BaseModel):
+    task: str = Field(min_length=1, max_length=1000)
+    genre: str = Field(min_length=1, max_length=200)
+    requirements: list[str] = Field(min_length=1, max_length=12)
+    material_basis: list[str] = Field(min_length=1, max_length=12)
+
 class Grade(ReferenceDraft):
+    task_analysis: TaskAnalysis | None = None
     score: float = Field(ge=0, le=50, allow_inf_nan=False)
     dimensions: dict[str, float]
     strengths: list[str] = Field(min_length=1, max_length=10)

@@ -142,6 +142,31 @@ class AppTests(unittest.TestCase):
         p=self.client.put('/api/papers/'+p['id'],json=p).json()
         self.assertEqual(p['questions'][0]['materials'],'新的人工校对材料，具有不同内容。')
         self.assertEqual(self.client.get('/api/attempts/'+a['id']).json()['question_snapshot']['materials'],original)
+    def test_grading_uses_question_requirements_instead_of_training_genre(self):
+        p=self.make_paper()
+        prompts=[('summary','根据资料1，概括当地产业发展的主要变化。不超过350字。'),
+                 ('summary','根据资料1，分析创新带来竞争优势的原因。不超过350字。'),
+                 ('summary','根据资料1，以产业变化为题写一份简报。不超过350字。'),
+                 ('practical','根据资料1，拟写一份发言提纲，600字以内。'),
+                 ('practical','根据资料1，写一则短评，自拟题目，不超过600字。'),
+                 ('essay','结合资料1，围绕创新发展自拟题目写一篇议论性文章，1000-1200字。')]
+        for kind,prompt in prompts:
+            p['questions'][0].update(kind=kind,prompt=prompt)
+            p=self.client.put('/api/papers/'+p['id'],json=p).json()
+            before=len(self.mock.call_args_list);a=self.submit(p)
+            calls=[c for c in self.mock.call_args_list[before:] if c.args[1].startswith('独立批改')]
+            self.assertEqual(len(calls),1)
+            task,data=calls[0].args[1:]
+            self.assertNotIn('简报',task);self.assertNotIn('简报',data['rubric'])
+            self.assertEqual(data['question']['prompt'],prompt)
+            self.assertEqual(data['question']['materials'],p['questions'][0]['materials'])
+            self.assertEqual(data['answer'],a['answer'])
+            self.assertIn('task_analysis',task);self.assertIn('kind只表示20/30/50分训练档',task)
+            self.assertEqual(a['grading_policy'],'question-first-v1')
+        for call in self.mock.call_args_list:
+            if call.args[1].startswith('汇总'):
+                self.assertIn('文体误判',call.args[1])
+
     def test_highlights_persist_colors_and_reject_stale_or_invalid_anchors(self):
         from app.annotations import canonical_text
         p=self.make_paper();q=p['questions'][0]
