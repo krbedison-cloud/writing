@@ -78,6 +78,7 @@ class Database:
         if not rows:
             return None
         p = json.loads(rows[0]["config"])
+        p.setdefault("timeout_seconds", 600)
         p.update(id=id, has_key=bool(rows[0]["secret"]))
         if private:
             p["api_key"] = self.cipher.decrypt(rows[0]["secret"].encode()).decode() if rows[0]["secret"] else ""

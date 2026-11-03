@@ -309,6 +309,42 @@ class AppTests(unittest.TestCase):
         good_calls=sum(1 for c in self.mock.call_args_list if c.args[0]['model']=='good' and c.args[1].startswith('独立'))
         result=self.client.post('/api/attempts/'+a['id']+'/retry').json();self.wait_job(result['job_id'])
         self.assertEqual(good_calls,sum(1 for c in self.mock.call_args_list if c.args[0]['model']=='good' and c.args[1].startswith('独立')))
+    def test_single_coach_retry_preserves_all_other_results(self):
+        p=self.make_paper();first=self.add_model('bad');second=self.add_model('bad-two')
+        recovered=set();seen=[]
+        async def selective(provider,task,payload):
+            if task.startswith('独立批改'):
+                seen.append((provider['id'],provider.get('timeout_seconds')))
+                if provider['model'].startswith('bad') and provider['id'] not in recovered:
+                    raise ModelError('接口超时，已保留作答，可重试')
+                if provider['id'] in recovered:return grade(18)
+            return await fake_model(dict(provider,model='good') if provider['id'] in recovered else provider,task,payload)
+        with patch('app.service.call_model',side_effect=selective):
+            a=self.submit(p,models=[self.master,first['id'],second['id']])
+            self.assertEqual(a['status'],'partial')
+            unchanged={g['provider_id']:g for g in a['grades'] if g['provider_id']!=first['id']}
+            path='/api/attempts/'+a['id']+'/retry'
+            self.assertEqual(self.client.post(path,json={'provider_id':self.master}).status_code,400)
+            self.assertEqual(self.client.post(path,json={'provider_id':'unrelated-coach'}).status_code,400)
+            config=dict(first,timeout_seconds=1200,api_key='')
+            self.assertEqual(self.client.put('/api/providers/'+first['id'],json=config).status_code,200)
+            before=len(seen);recovered.add(first['id'])
+            result=self.client.post(path,json={'provider_id':first['id']})
+            self.assertEqual(result.status_code,200,result.text);result=result.json()
+            self.wait_job(result['job_id'])
+            updated=self.client.get('/api/attempts/'+a['id']).json()
+            self.assertEqual(seen[before:],[(first['id'],1200)])
+            for g in updated['grades']:
+                if g['provider_id'] in unchanged:self.assertEqual(g,unchanged[g['provider_id']])
+            self.assertEqual(updated['status'],'partial')
+            self.assertEqual(updated['mean_score'],17)
+            self.assertIsNotNone(updated['synthesis'])
+            self.assertEqual(updated['answer'],a['answer'])
+            self.assertEqual(updated['question_snapshot'],a['question_snapshot'])
+            self.assertNotIn('retry_provider_ids',updated)
+            updated['status']='running';self.app.state.service.db.put('attempts',a['id'],updated,updated['created_at'])
+            self.assertEqual(self.client.post(path,json={'provider_id':second['id']}).status_code,409)
+
     def test_all_fail_no_fake_zero_score(self):
         p=self.make_paper();bad=self.add_model('bad');a=self.submit(p,models=[bad['id']])
         self.assertEqual(a['status'],'failed');self.assertIsNone(a['mean_score'])

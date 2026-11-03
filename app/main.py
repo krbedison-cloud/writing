@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Body
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from .db import Database, dumps
-from .schemas import ProviderInput, PaperInput, AttemptInput, RegenerateInput, HighlightInput, HighlightColor, KINDS
+from .schemas import ProviderInput, PaperInput, AttemptInput, RegenerateInput, RetryInput, HighlightInput, HighlightColor, KINDS
 from .pdf import extract_pdf, parse_text
 from .materials import prepare_paper, model_question
 from .annotations import canonical_text
@@ -296,16 +296,30 @@ def create_app(data_dir=None):
         service.launch(service.regenerate_reference(j,id,value.provider_id,value.direction,value.reference_id))
         return j
     @app.post('/api/attempts/{id}/retry')
-    async def retry(id: str):
+    async def retry(id: str, value: RetryInput | None = None):
         a = attempt(id)
         if a['status'] in ('queued','running') or reference_running(id):
             raise HTTPException(409, '任务正在执行')
         if a['status'] == 'completed':
             raise HTTPException(400, '本次批改已全部成功，无需重试')
+        provider_id = value.provider_id if value else None
+        failed = [p['id'] for p in a['providers'] if not any(g['provider_id']==p['id'] and g['status']=='completed' for g in a['grades'])]
+        if provider_id is not None:
+            if not any(p['id']==provider_id for p in a['providers']):
+                raise HTTPException(400, '该教练未参与本次作答')
+            if provider_id not in failed:
+                raise HTTPException(400, '该教练已成功，无需重试')
+            service.provider(provider_id)
+        targets = [provider_id] if provider_id is not None else failed
         a['status'] = 'queued'
+        a['retry_provider_ids'] = targets
+        a['synthesis'] = None
         db.put('attempts', id, a, a['created_at'])
         j = service.job('grading', id)
-        service.launch(service.grade(j, id))
+        if provider_id is not None:
+            j['provider_id'] = provider_id
+            db.put('jobs', j['id'], j)
+        service.launch(service.grade(j, id, targets))
         return {'attempt_id':id,'job_id':j['id']}
     @app.get('/api/profile')
     def profile():

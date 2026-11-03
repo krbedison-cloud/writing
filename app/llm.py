@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import httpx
@@ -33,6 +34,7 @@ async def call_model(provider, task, payload):
     headers = {'Accept': 'application/json'}
     limit = provider['max_tokens']
     protocol = provider['protocol']
+    timeout_seconds = provider.get('timeout_seconds', 600)
     if protocol == 'anthropic':
         url = base + '/messages'
         headers.update({'x-api-key': key, 'anthropic-version': '2023-06-01'})
@@ -47,7 +49,7 @@ async def call_model(provider, task, payload):
             headers['Authorization'] = 'Bearer ' + key
         body = {'model':provider['model'],'messages':[{'role':'system','content':SYSTEM},{'role':'user','content':message}],'max_completion_tokens':limit}
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(240, connect=20), follow_redirects=False) as client:
+        async with asyncio.timeout(timeout_seconds), httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=min(20, timeout_seconds)), follow_redirects=False) as client:
             response = await client.post(url, headers=headers, json=body)
             # Some OpenAI-compatible gateways only accept max_tokens.
             if protocol == 'openai' and response.status_code == 400 and 'max_completion_tokens' in response.text[:4000]:
@@ -73,7 +75,7 @@ async def call_model(provider, task, payload):
             return parse_json(content)
     except ModelError:
         raise
-    except httpx.TimeoutException as exc:
-        raise ModelError('接口超时（单次最长 240 秒），已保留作答，可重试') from exc
+    except (TimeoutError, httpx.TimeoutException) as exc:
+        raise ModelError(f'接口超时（本次等待上限 {timeout_seconds:g} 秒），已保留作答；可在模型设置调高超时后重试该教练') from exc
     except (httpx.HTTPError, KeyError, IndexError, ValueError, TypeError) as exc:
         raise ModelError('接口连接失败或响应结构不匹配，请检查协议与配置') from exc

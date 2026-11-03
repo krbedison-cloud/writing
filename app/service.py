@@ -137,7 +137,7 @@ class Service:
             self.finish(j)
         except Exception as exc:
             self.finish(j,public_error(exc))
-    async def grade(self, j, attempt_id):
+    async def grade(self, j, attempt_id, provider_ids=None):
         a = self.db.get('attempts', attempt_id)
         a.update(status='running', error=None, grading_policy=GRADING_POLICY)
         self.db.put('attempts', a['id'], a, a['created_at'])
@@ -169,7 +169,8 @@ class Service:
             a['grades'] = [x for x in a['grades'] if x['provider_id'] != pid] + [g]
             self.db.put('attempts', a['id'], a, a['created_at'])
         try:
-            await asyncio.gather(*(one(p['id']) for p in a['providers']))
+            targets = provider_ids if provider_ids is not None else [p['id'] for p in a['providers']]
+            await asyncio.gather(*(one(pid) for pid in targets))
             good = [g for g in a['grades'] if g['status'] == 'completed']
             a['mean_score'] = round(statistics.mean(g['result']['score'] for g in good), 2) if good else None
             a['score_spread'] = round(max(g['result']['score'] for g in good) - min(g['result']['score'] for g in good), 2) if good else None
@@ -188,6 +189,7 @@ class Service:
                 except Exception as exc:
                     a.update(status='summary_failed', error=public_error(exc))
             a['finished_at'] = now()
+            a.pop('retry_provider_ids',None)
             self.db.put('attempts', a['id'], a, a['created_at'])
             self.finish(j, a.get('error'))
             if good:
@@ -195,6 +197,7 @@ class Service:
                 self.launch(self.portrait(profile_job, a['master']['id']))
         except Exception as exc:
             a.update(status='failed', error=public_error(exc))
+            a.pop('retry_provider_ids',None)
             self.db.put('attempts', a['id'], a, a['created_at'])
             self.finish(j, a['error'])
     def stats(self):

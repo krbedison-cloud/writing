@@ -11,6 +11,7 @@ class ProviderInput(BaseModel):
     model: str = Field(min_length=1, max_length=160, pattern=r"^[a-zA-Z0-9._:/@+\-]+$")
     api_key: str = Field(default="", max_length=2000)
     max_tokens: int = Field(default=6000, ge=1000, le=32000)
+    timeout_seconds: int = Field(default=600, ge=60, le=1800)
     @model_validator(mode="after")
     def validate_url(self):
         from urllib.parse import urlsplit
@@ -62,6 +63,9 @@ class AttemptInput(BaseModel):
     answer: str = Field(min_length=1, max_length=20000)
     provider_ids: list[str] = Field(min_length=1, max_length=12)
     master_id: str
+
+class RetryInput(BaseModel):
+    provider_id: str | None = None
 
 class ReferenceSelfCheck(BaseModel):
     word_count: int = Field(ge=0, le=20000)

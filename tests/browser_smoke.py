@@ -85,9 +85,22 @@ def main():
                     page.locator('[name="base_url"]').fill(f'http://127.0.0.1:{mock.server_port}/v1')
                     page.locator('[name="model"]').fill(model)
                     page.locator('[name="api_key"]').fill('mock-only')
+                    expect(page.locator('[name="timeout_seconds"]')).to_have_value('600')
                     page.locator('#model-form button[type="submit"]').click()
                     expect(page.locator('#editor')).not_to_be_visible()
                     expect(page.locator('.model-card')).to_have_count(1 if model=='coach-a' else 2)
+                # Per-model timeout survives an edit/reload and does not require re-entering the key.
+                coach_b=page.locator('.model-card').filter(has=page.get_by_role('heading',name='coach-b',exact=True))
+                coach_b.locator('[data-action="edit-model"]').click()
+                page.locator('[name="timeout_seconds"]').fill('900')
+                page.locator('#model-form button[type="submit"]').click()
+                expect(page.locator('#editor')).not_to_be_visible()
+                page.reload();expect(page.locator('.model-card')).to_have_count(2)
+                coach_b=page.locator('.model-card').filter(has=page.get_by_role('heading',name='coach-b',exact=True))
+                expect(coach_b).to_contain_text('等待时限 900 秒')
+                coach_b.locator('[data-action="edit-model"]').click()
+                expect(page.locator('[name="timeout_seconds"]')).to_have_value('900')
+                page.locator('[data-action="close-dialog"]').click()
                 if args.pdf:
                     pdf=Path(args.pdf)
                 else:
@@ -296,8 +309,19 @@ def main():
                     page.wait_for_url('**/#attempt/*')
                     if index==0:
                         expect(page.get_by_text('仅成功模型参与均分。',exact=False)).to_be_visible(timeout=20000)
-                        page.locator('[data-action="retry"]').click()
+                        retry=page.locator('[data-action="retry-coach"]')
+                        expect(retry).to_have_count(1)
+                        expect(page.locator('.score-card').filter(has=page.get_by_text('coach-a',exact=True)).locator('[data-action="retry-coach"]')).to_have_count(0)
+                        failed_id=retry.get_attribute('data-provider');good_calls=counts['coach-a'];bad_calls=counts['coach-b']
+                        page.evaluate("window.__retryPaper=document.querySelector('.paper-preview')")
+                        with page.expect_request(lambda request:request.method=='POST' and request.url.endswith('/retry')) as sent:
+                            retry.click()
+                        assert sent.value.post_data_json=={'provider_id':failed_id}
                     expect(page.locator('[data-action="retry"]')).to_have_count(0,timeout=20000)
+                    expect(page.locator('[data-action="retry-coach"]')).to_have_count(0,timeout=20000)
+                    if index==0:
+                        assert counts['coach-a']==good_calls and counts['coach-b']==bad_calls+1,counts
+                        assert page.evaluate("window.__retryPaper===document.querySelector('.paper-preview')")
                     expect(page.locator('#review-body')).to_contain_text('模拟接口生成',timeout=20000)
                     # Ensure both results have arrived before moving to the next question.
                     aid=page.url.split('/')[-1]
@@ -375,7 +399,7 @@ def main():
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()
-            print('PASS: question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)
