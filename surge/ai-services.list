@@ -1,10 +1,11 @@
-# Surge RULE-SET: AI Services (fixed egress)
+# Surge remote RULE-SET: AI services, conservative fixed egress
 # Updated: 2026-11-03
-# Format: One match rule per line, NO policy appended.
-# Usage: RULE-SET,https://raw.githubusercontent.com/krbedison-cloud/writing/main/surge/ai-services.list,AI-Fixed
-# Configure AI-Fixed as a manual select policy group with a fixed proxy.
-# Rules must precede broad rules and FINAL.
-#
+# Only rule matchers here; no policy on individual lines.
+# Subscription: RULE-SET,https://raw.githubusercontent.com/krbedison-cloud/writing/main/surge/ai-services.list,AI-Fixed
+# AI-Fixed must be a manually selected proxy group, not Smart/fallback.
+# Put RULE-SET before catch-all rules such as FINAL.
+# Service-specific dependencies included; broad shared CDNs, Auth0, IPs, ASNs, process rules excluded.
+# Static group selection does not guarantee a static proxy exit IP.
 # OpenAI / ChatGPT / Codex
 DOMAIN-SUFFIX,openai.com
 DOMAIN-SUFFIX,chatgpt.com
@@ -12,30 +13,49 @@ DOMAIN-SUFFIX,oaistatic.com
 DOMAIN-SUFFIX,oaiusercontent.com
 DOMAIN-SUFFIX,oaistatsig.com
 DOMAIN-SUFFIX,openaimerge.com
-#
-# Gemini / AI Studio / NotebookLM (service-specific Google hosts only)
+DOMAIN,chat.openai.com.cdn.cloudflare.net
+DOMAIN,openai-api.arkoselabs.com
+DOMAIN,openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net
+DOMAIN,openaicomproductionae4b.blob.core.windows.net
+DOMAIN,production-openaicom-storage.azureedge.net
+DOMAIN,openaiapi-site.azureedge.net
+DOMAIN,openaicom.imgix.net
+DOMAIN,chatgpt.livekit.cloud
+DOMAIN,turn.livekit.cloud
+DOMAIN,host.livekit.cloud
+DOMAIN,client-api.arkoselabs.com
+DOMAIN,api.statsig.com
+DOMAIN,events.statsigapi.net
+
+# Gemini / AI Studio / NotebookLM
 DOMAIN,gemini.google.com
 DOMAIN,aistudio.google.com
 DOMAIN,generativelanguage.googleapis.com
 DOMAIN,ai.google.dev
 DOMAIN,makersuite.google.com
 DOMAIN,notebooklm.google.com
+DOMAIN,alkalimakersuite-pa.clients6.google.com
+DOMAIN,proactivebackend-pa.googleapis.com
+DOMAIN,aisandbox-pa.googleapis.com
+DOMAIN,robinfrontend-pa.googleapis.com
 DOMAIN-SUFFIX,deepmind.google
 DOMAIN-SUFFIX,deepmind.com
-#
+DOMAIN-SUFFIX,generativeai.google
+
 # Grok / xAI
 DOMAIN-SUFFIX,grok.com
 DOMAIN-SUFFIX,x.ai
-#
+
 # Claude / Anthropic
 DOMAIN-SUFFIX,anthropic.com
 DOMAIN-SUFFIX,claude.ai
 DOMAIN-SUFFIX,claude.com
 DOMAIN-SUFFIX,claudeusercontent.com
-#
+
 # Perplexity
 DOMAIN-SUFFIX,perplexity.ai
-#
+DOMAIN-SUFFIX,pplx.ai
+
 # AI APIs and platforms
 DOMAIN-SUFFIX,openrouter.ai
 DOMAIN-SUFFIX,deepseek.com
@@ -51,16 +71,9 @@ DOMAIN-SUFFIX,groq.com
 DOMAIN-SUFFIX,mistral.ai
 DOMAIN-SUFFIX,cohere.com
 DOMAIN-SUFFIX,cohere.ai
-#
+DOMAIN,copilot.microsoft.com
+
 # AI media
 DOMAIN-SUFFIX,elevenlabs.io
 DOMAIN-SUFFIX,runwayml.com
 DOMAIN-SUFFIX,midjourney.com
-#
-# Notes:
-# - Shared authentication/CDN domains are intentionally excluded to avoid
-#   forcing unrelated services onto the AI proxy.
-# - GitHub is intentionally excluded; Codex cloud GitHub operations execute
-#   in OpenAI cloud and do not traverse a home Surge gateway.
-# - Static policy selection reduces local proxy switching but does not
-#   guarantee a static public IP or prevent cloud-side disconnections.
