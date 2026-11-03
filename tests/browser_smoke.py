@@ -141,9 +141,33 @@ def main():
                         page.locator('[data-highlight-save]').click()
                         expect(page.locator('mark.material-mark')).to_have_attribute('data-color','#ff8800')
                         assert page.locator('mark.material-mark').evaluate('el=>getComputedStyle(el).backgroundColor')=='rgb(255, 136, 0)'
-                        page.screenshot(path='/tmp/shenlun-highlight-paper-tested.png',full_page=True)
-                        page.locator('mark.material-mark').click();page.locator('[data-highlight-delete]').click()
+                        # Selecting existing highlighted text offers removal instead of a duplicate highlight.
+                        page.evaluate("""() => {document.activeElement.blur();const n=document.querySelector('mark.material-mark').firstChild;const r=document.createRange();r.setStart(n,1);r.setEnd(n,Math.min(6,n.length));const s=getSelection();s.removeAllRanges();s.addRange(r);} """)
+                        expect(page.locator('[data-highlight-delete]')).to_be_visible()
+                        expect(page.locator('[data-highlight-save]')).not_to_be_visible()
+                        page.locator('[data-highlight-delete]').click()
                         expect(page.locator('mark.material-mark')).to_have_count(0)
+                        page.reload();expect(page.locator('#highlight-count')).to_contain_text('已保存 0 处')
+                        # A mixed selection spanning two annotations removes both selected annotations.
+                        for start,end in [(0,4),(8,12)]:
+                            page.evaluate("""([start,end])=>{document.activeElement.blur();const n=document.querySelector('#question-materials p').firstChild;const w=document.createTreeWalker(document.querySelector('#question-materials p'),NodeFilter.SHOW_TEXT);let at=0,a,b;while(w.nextNode()){const t=w.currentNode;if(at<=start&&at+t.length>start)a=[t,start-at];if(at<end&&at+t.length>=end)b=[t,end-at];at+=t.length;}const r=document.createRange();r.setStart(...a);r.setEnd(...b);const s=getSelection();s.removeAllRanges();s.addRange(r);} """,[start,end])
+                            expect(page.locator('[data-highlight-save]')).to_be_visible();page.locator('[data-highlight-save]').click()
+                            expect(page.locator('mark.material-mark')).to_have_count(1 if start==0 else 2)
+                            expect(page.locator('#material-toolbar')).not_to_be_visible()
+                        expect(page.locator('mark.material-mark')).to_have_count(2)
+                        page.evaluate("""()=>{document.activeElement.blur();const marks=document.querySelectorAll('mark.material-mark');const r=document.createRange();r.setStart(marks[0].firstChild,0);r.setEnd(marks[1].firstChild,marks[1].firstChild.length);const s=getSelection();s.removeAllRanges();s.addRange(r);} """)
+                        expect(page.locator('[data-highlight-delete]')).to_be_visible();expect(page.locator('[data-highlight-save]')).not_to_be_visible()
+                        page.locator('[data-highlight-delete]').click();expect(page.locator('mark.material-mark')).to_have_count(0)
+                        # The edge drawer opens on hover and releases its width when the mouse leaves.
+                        page.set_viewport_size({'width':1440,'height':900})
+                        page.mouse.move(800,70)
+                        expect(page.locator('#navigation-drawer')).to_have_attribute('data-open','false')
+                        page.locator('#nav-reveal').hover();expect(page.locator('#nav-reveal')).to_have_attribute('aria-expanded','true')
+                        page.wait_for_timeout(300)
+                        assert abs(page.locator('.sidebar').bounding_box()['x'])<1
+                        page.mouse.move(800,70);expect(page.locator('#nav-reveal')).to_have_attribute('aria-expanded','false')
+                        page.wait_for_timeout(300)
+                        assert page.locator('.sidebar').bounding_box()['x']+page.locator('.sidebar').bounding_box()['width']<=1
                         # Native typing, formatting, undo, paste and IME confirmation keep the plain-text source.
                         page.locator('#answer').fill('标题\n　　正文ABC123。')
                         page.locator('#answer').evaluate('el=>el.setSelectionRange(1,1)')
@@ -162,8 +186,25 @@ def main():
                         page.locator('#answer').fill('甲\n'*15)
                         expect(page.locator('#paper-warning')).to_contain_text('纸面超限')
                         assert page.locator('.paper-overflow').count()>0
+                    # Every row and all 25 columns fit beside the materials, including the 48-row essay.
+                    for width,height in [(1280,800),(1440,900),(1920,1080)]:
+                        page.set_viewport_size({'width':width,'height':height})
+                        page.wait_for_timeout(150)
+                        geometry=page.evaluate("""()=>{const v=document.querySelector('#paper-viewport'),b=v.getBoundingClientRect();return {fits:[...document.querySelectorAll('#paper-grid .paper-cell')].every(c=>{const r=c.getBoundingClientRect();return r.left>=b.left-1&&r.right<=b.right+1&&r.top>=b.top-1&&r.bottom<=b.bottom+1&&r.bottom<=innerHeight;}),scrollX:v.scrollWidth-v.clientWidth,scrollY:v.scrollHeight-v.clientHeight,body:document.documentElement.scrollWidth<=innerWidth,square:(()=>{const r=document.querySelector('.paper-cell').getBoundingClientRect();return Math.abs(r.width-r.height)<.1;})()};}""")
+                        assert geometry['fits'] and geometry['scrollX']<=1 and geometry['scrollY']<=1 and geometry['body'] and geometry['square'],(index,width,height,geometry)
+                        assert abs(page.locator('.reading-pane').bounding_box()['y']-page.locator('.writing-pane').bounding_box()['y'])<1
+                    page.set_viewport_size({'width':1440,'height':900})
+                    if index==2:
+                        page.locator('#answer').fill('文'*expected['questions'][index]['paper_spec']['cells'])
+                        assert int(page.locator('#paper-editor').get_attribute('data-paper-columns'))>=2
+                        cell=page.locator('.paper-page-start').nth(1).locator('.paper-cell').first
+                        offset=int(cell.get_attribute('data-cell'));cell.click(position={'x':2,'y':2});page.keyboard.insert_text('标')
+                        assert page.locator('#answer').input_value()[offset]=='标'
+                        page.screenshot(path='/tmp/shenlun-composition-overflow-tested.png',full_page=True)
                     answer='加强基础建设，推动绿色创新；完善产业配套，提升竞争优势。'+str(index)
                     page.locator('#answer').fill(answer)
+                    if index==2:
+                        page.screenshot(path='/tmp/shenlun-composition-essay-tested.png',full_page=True)
                     if index==0:
                         assert page.locator('#question-materials').evaluate('el=>getComputedStyle(el).fontSize')=='20px'
                         page.locator('#reading-menu > summary').click()
@@ -253,7 +294,7 @@ def main():
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()
-            print('PASS: persisted highlights/custom colors, 25-column paper/formatting/undo/paste/IME/overflow, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)

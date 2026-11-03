@@ -39,10 +39,12 @@
    const indent=this.root.querySelector('#paper-indent');
    try{indent.checked=localStorage.getItem('paper-auto-indent')!=='0';}catch{}
    indent.addEventListener('change',()=>{try{localStorage.setItem('paper-auto-indent',indent.checked?'1':'0')}catch{}},options);
-   this.observer=new ResizeObserver(()=>this.selection());this.observer.observe(this.viewport);
+   this.observer=new ResizeObserver(()=>this.fit());this.observer.observe(this.viewport);
+   this.preferencesObserver=new MutationObserver(()=>this.fit());
+   this.preferencesObserver.observe(document.documentElement,{attributes:true,attributeFilter:['data-reading-size','data-focus','data-reading-layout']});
    this.render(false);
   }
-  destroy(){this.abort.abort();this.observer.disconnect();}
+  destroy(){this.abort.abort();this.observer.disconnect();this.preferencesObserver.disconnect();}
   render(scroll){
    this.layout=PaperLayout.analyze(this.input.value,this.spec);
    const total=Math.max(this.spec.rows,this.layout.used_rows,1);
@@ -53,7 +55,35 @@
     node.classList.toggle('paper-overflow',index>=this.spec.cells);
    });
    this.onChange?.(PaperLayout.check(this.input.value,this.spec));
+   this.fit();
    this.selection(scroll);
+  }
+  fit(){
+   if(!this.rows||!this.viewport.isConnected||this.root.dataset.mode!=='grid')return;
+   const width=this.viewport.clientWidth,height=this.viewport.clientHeight;
+   if(width<1||height<1)return;
+   const preferred=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--reading-size'))||20;
+   let best={cell:0,pages:1,rows:this.rows};
+   // Consecutive rows flow down each paper column, then continue in the next.
+   // Choose the largest square that keeps every row inside the available area.
+   for(let pages=1;pages<=Math.min(this.rows,12);pages++){
+    const rows=Math.ceil(this.rows/pages);
+    const cell=Math.floor(Math.min(preferred+4,(width-28-16*(pages-1)-22*pages)/(25*pages),(height-30)/(rows*1.28))*2)/2;
+    if(cell>best.cell+.4)best={cell,pages,rows};
+   }
+   const cell=Math.max(1,best.cell),style=rule('#paper-editor').style;
+   style.setProperty('--paper-cell',cell+'px');
+   style.setProperty('--paper-font',Math.min(preferred,cell*.84)+'px');
+   style.setProperty('--paper-row',cell*1.28+'px');
+   style.setProperty('--paper-page-rows',String(best.rows));
+   this.grid.querySelectorAll('.paper-row').forEach((row,i)=>{
+    row.classList.toggle('paper-page-start',i%best.rows===0);
+    row.classList.toggle('paper-page-end',i%best.rows===best.rows-1||i===this.rows-1);
+   });
+   const status=this.root.querySelector('[data-paper-view]');
+   if(status)status.textContent=best.pages>1?`全文展开 · ${best.pages} 栏连续书写`:'全文展开';
+   this.root.dataset.paperColumns=String(best.pages);
+   this.selection();
   }
   selection(scroll=false){
    if(!this.layout||!this.input.isConnected)return;
@@ -70,7 +100,6 @@
    });
    const cell=this.cellNodes[index];if(!cell)return;
    if(this.root.dataset.mode==='grid'){
-    if(scroll&&active)cell.scrollIntoView({block:'nearest',inline:'nearest'});
     const rect=cell.getBoundingClientRect(),base=this.surface.getBoundingClientRect();
     rule('#paper-editor[data-mode="grid"] #answer').style.setProperty('left',Math.max(0,rect.left-base.left+(after?rect.width-2:0))+'px');
     rule('#paper-editor[data-mode="grid"] #answer').style.setProperty('top',Math.max(0,rect.top-base.top)+'px');
@@ -91,11 +120,6 @@
   }
   pointerMove(event){
    if(this.drag===null)return;
-   const bounds=this.viewport.getBoundingClientRect();
-   if(event.clientX>bounds.right-20)this.viewport.scrollLeft+=20;
-   if(event.clientX<bounds.left+20)this.viewport.scrollLeft-=20;
-   if(event.clientY>bounds.bottom-20)this.viewport.scrollTop+=20;
-   if(event.clientY<bounds.top+20)this.viewport.scrollTop-=20;
    const cell=document.elementFromPoint(event.clientX,event.clientY)?.closest('.paper-cell');if(!cell||!this.grid.contains(cell))return;
    const rect=cell.getBoundingClientRect();this.range(this.drag,this.atCell(Number(cell.dataset.cell),event.clientX>rect.left+rect.width/2));
   }
@@ -129,7 +153,7 @@
   }
   toggleMode(){
    const plain=this.root.dataset.mode!=='plain';this.root.dataset.mode=plain?'plain':'grid';this.grid.hidden=plain;
-   this.root.querySelector('[data-paper-mode]').textContent=plain?'返回格子纸':'原文编辑';this.input.focus({preventScroll:true});this.selection();
+   this.root.querySelector('[data-paper-mode]').textContent=plain?'返回格子纸':'原文编辑';this.input.focus({preventScroll:true});this.fit();this.selection();
   }
  }
  function preview(answer,spec){

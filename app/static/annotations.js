@@ -20,7 +20,7 @@
    document.addEventListener('selectionchange',()=>{clearTimeout(this.timer);this.timer=setTimeout(()=>this.capture(),100);},options);
    document.addEventListener('pointerdown',event=>{if(!this.toolbar.contains(event.target)&&!this.element.contains(event.target))this.hide();},options);
    this.element.addEventListener('pointerup',()=>setTimeout(()=>this.capture(),0),options);
-   this.element.addEventListener('click',event=>{const mark=event.target.closest('mark.material-mark');if(mark&&getSelection().isCollapsed){const item=this.items.find(x=>x.id===mark.dataset.highlightId);if(item){this.saved={...item};this.show(mark.getBoundingClientRect(),true);}}},options);
+   this.element.addEventListener('click',event=>{const mark=event.target.closest('mark.material-mark');if(mark&&getSelection().isCollapsed){const item=this.items.find(x=>x.id===mark.dataset.highlightId);if(item){this.saved={...item};this.show(mark.getBoundingClientRect(),'item');}}},options);
    this.toolbar.querySelectorAll('button').forEach(button=>button.addEventListener('pointerdown',event=>event.preventDefault(),options));
    this.toolbar.querySelector('[data-highlight-save]').addEventListener('click',()=>this.save(),options);
    this.toolbar.querySelector('[data-highlight-delete]').addEventListener('click',()=>this.remove(),options);
@@ -34,7 +34,7 @@
   destroy(){clearTimeout(this.timer);this.abort.abort();this.hide();}
   async load(){try{const data=await this.api(this.base);if(this.abort.signal.aborted)return;this.signature=data.signature;this.items=data.highlights;this.render();}catch(e){this.toast(e.message);}}
   capture(){
-   if(this.abort.signal.aborted||this.toolbar.contains(document.activeElement))return;
+   if(this.abort.signal.aborted||this.busy||(!this.toolbar.hidden&&this.toolbar.contains(document.activeElement)))return;
    const selection=getSelection();if(!selection.rangeCount||selection.isCollapsed)return;
    const range=selection.getRangeAt(0);
    if(!this.element.contains(range.startContainer)||!this.element.contains(range.endContainer))return;
@@ -42,13 +42,16 @@
    const start=Array.from(canonical(prefix.toString())).length,quote=canonical(range.toString());
    if(!quote)return;
    this.saved={signature:this.signature||this.q.material_signature,start,end:start+Array.from(quote).length,quote};
-   this.show(range.getBoundingClientRect(),false);
+   const overlaps=this.items.filter(item=>item.start<this.saved.end&&item.end>start);
+   if(overlaps.length){this.saved.ids=overlaps.map(item=>item.id);this.saved.color=overlaps.at(-1).color;}
+   this.show(range.getBoundingClientRect(),overlaps.length?'highlighted-selection':'selection');
   }
-  show(rect,existing){
+  show(rect,mode){
    this.toolbar.hidden=false;
-   this.toolbar.querySelector('[data-highlight-save]').textContent=existing?'更新颜色':'高亮';
-   this.toolbar.querySelector('[data-highlight-delete]').hidden=!existing;
-   if(existing&&colorPattern.test(this.saved.color))this.color.value=this.saved.color;
+   const save=this.toolbar.querySelector('[data-highlight-save]'),remove=this.toolbar.querySelector('[data-highlight-delete]');
+   save.hidden=mode==='highlighted-selection';save.textContent=mode==='item'?'更新颜色':'高亮';
+   remove.hidden=mode==='selection';remove.classList.toggle('primary',mode==='highlighted-selection');
+   if(mode!=='selection'&&colorPattern.test(this.saved.color))this.color.value=this.saved.color;
    this.position(rect);
   }
   position(rect){
@@ -59,18 +62,24 @@
   }
   hide(){this.toolbar.hidden=true;this.saved=null;}
   async save(){
-   if(!this.saved)return;
+   if(!this.saved||this.busy)return;this.busy=true;
    const button=this.toolbar.querySelector('[data-highlight-save]');button.disabled=true;
    const value={...this.saved,color:this.color.value};
    try{
     const item=value.id?await this.api('/highlights/'+value.id,{method:'PATCH',body:JSON.stringify({color:value.color})}):await this.api(this.base,{method:'POST',body:JSON.stringify(value)});
     if(this.abort.signal.aborted)return;
     this.items=this.items.filter(x=>x.id!==item.id).concat(item);this.render();getSelection().removeAllRanges();this.hide();this.toast('高亮已保存');
-   }catch(e){this.toast(e.message);}finally{button.disabled=false;}
+   }catch(e){this.toast(e.message);}finally{button.disabled=false;this.busy=false;}
   }
   async remove(){
-   if(!this.saved?.id)return;
-   const id=this.saved.id;try{await this.api('/highlights/'+id,{method:'DELETE'});this.items=this.items.filter(x=>x.id!==id);this.render();this.hide();this.toast('已取消这处高亮');}catch(e){this.toast(e.message);}
+   const ids=this.saved?.ids||(this.saved?.id?[this.saved.id]:[]);if(!ids.length)return;
+   if(this.busy)return;this.busy=true;
+   const button=this.toolbar.querySelector('[data-highlight-delete]');button.disabled=true;
+   try{
+    for(const id of ids)await this.api('/highlights/'+id,{method:'DELETE'});
+    if(this.abort.signal.aborted)return;
+    this.items=this.items.filter(x=>!ids.includes(x.id));this.render();getSelection().removeAllRanges();this.hide();this.toast('已取消所选标注的高亮');
+   }catch(e){await this.load();this.toast(e.message);}finally{button.disabled=false;this.busy=false;}
   }
   render(){
    if(!this.element.isConnected)return;

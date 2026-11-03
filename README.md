@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh | bash
 ```
 
-安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.6` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
+安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.7` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
 
 配置保存在 `~/shenlun-studio/.env`，程序只监听本机 `18086` 端口；数据使用 Docker 数据卷 `shenlun-studio-data`。安装脚本会输出实际访问地址和停止命令。重复运行安装命令不会覆盖已有 `.env`；如版本配置文件已有人工修改，会停止而不是覆盖。发布的新版本可以通过再次执行安装命令更新，既有数据保留。
 
@@ -39,7 +39,7 @@ SHENLUN_DIR="$HOME/Applications/shenlun-studio" bash install-shenlun.sh
 公开镜像可直接拉取：
 
 ```bash
-docker pull ghcr.io/krbedison-cloud/writing:v0.1.6
+docker pull ghcr.io/krbedison-cloud/writing:v0.1.7
 ```
 
 GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架构镜像并创建对应标签的 Release。发布新版本时同步更新 VERSION、安装脚本默认版本与部署配置。GHCR 首次创建的包可能是私有的；仓库拥有者可到 GitHub 的 Packages → writing → Package settings 将包设为 Public，之后无需登录即可拉取。即使没有更改包的可见性，上面的安装器仍能使用公开 Release 中的预构建 Docker 镜像完成安装，不必登录 GHCR。
@@ -49,7 +49,7 @@ GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架
 在运行 Docker Desktop 的 Mac mini 上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.6/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.7/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
 ```
 
 安装器会保留已有数据和其他配置，持久设置 `APP_BIND=0.0.0.0`、`ALLOW_LAN=1` 以及指定端口。Docker 会在 Mac 所有 IPv4 接口监听 `18086`，应用允许以私有局域网 IP 访问；原来的主机白名单和同源写入检查仍有效。IP 变化后通常不需要重新配置白名单。
@@ -63,7 +63,7 @@ Mac 防火墙如提示 Docker 接收入站连接，选择允许。设备需要�
 恢复仅本机访问：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.6/install.sh | SHENLUN_LAN=0 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.7/install.sh | SHENLUN_LAN=0 bash
 ```
 
 未指定 `SHENLUN_LAN` 时，保留现有的访问模式。
@@ -111,11 +111,13 @@ PDF 内文的硬换行仅在显示时整理为段落；原始材料、题干、�
 
 ### 材料高亮、25格稿纸与范文校验
 
-**材料高亮**：在作答页选中一段材料，悬浮工具中点“高亮”。默认亮黄色，可先用颜色控件选其他颜色；点击已有高亮可改色或取消。标注按题保存在服务器 SQLite 中，刷新、容器升级或换一台局域网电脑后仍能读取。文字位置采用材料指纹和 Unicode 字符锚点；材料实质变更后，旧标注保留归档而不错误套用到新文字。高亮不会被额外发送给模型。
+**材料高亮**：在作答页选中一段材料，悬浮工具中点“高亮”。默认亮黄色，可先用颜色控件选其他颜色；重新框选已有高亮时，主操作变为“取消高亮”，不会重复添加。选区跨越多处标注时会取消这些标注；点击一处高亮还可更新颜色或取消。标注按题保存在服务器 SQLite 中，刷新、容器升级或换一台局域网电脑后仍能读取。文字位置采用材料指纹和 Unicode 字符锚点；材料实质变更后，旧标注保留归档而不错误套用到新文字。高亮不会被额外发送给模型。
 
 **25格答题纸**：每行固定25格，默认行数为题目字数上限除以25后向上取整。300字12行、350字14行、500字20行、600字24行、1200字48行。在“校对试卷”中可为每题设置实际纸面行数，0表示自动。这个表是本软件的默认训练纸面规则；实际答题卡行数应以原卷为准。
 
-原文作为一个连续答案保存，支持中文输入法、粘贴、删除、撤销与选择；可随时切换“原文编辑”，统计规则不变。工具栏提供空两格、顶格、标题居中、落款右对齐；标题先输入再点居中。Enter换段默认空两格，可关闭；Tab插入两格，Shift+Tab或Esc可离开稿纸输入。宽度不足时纸面内部横向滚动，或使用专注模式／上下阅读布局，不把字号强行缩小。
+原文作为一个连续答案保存，支持中文输入法、粘贴、删除、撤销与选择；可随时切换“原文编辑”，统计规则不变。工具栏提供空两格、顶格、标题居中、落款右对齐；标题先输入再点居中。Enter换段默认空两格，可关闭；Tab插入两格，Shift+Tab或Esc可离开稿纸输入。
+
+电脑默认左右对照，材料区独立滚动，完整答题纸根据窗口宽高自适应铺开，没有纸面内部的横向或纵向滚动条。方格保持正方形，采用作文纸的朱红格线、行间留白和双线边框；长作文自动分栏，按行号从上往下、从左到右连续书写，每行始终25格，分栏不增加答题格数。格内字号以阅读设置为上限，随可用空间调整；材料仍使用所选正文字号。较窄的电脑窗口会自动收起左侧导航，鼠标移至左边“导航”标签展开、移出收起，也可用键盘或点击标签操作。手机或手动选择“上下阅读”时，两区上下排列，纸面同样完整铺开。
 
 按本软件规则：汉字、字母、数字和标点各占1格且计字；空格、全角空格占格不计字，Tab占2格；换行把本行剩余格计为格式空耗，空行也占纸面。标题、称呼、落款、日期本身的文字也计字。程序同时展示字数、已占行数、缩进和换行空耗；超出纸面的内容标红保留，可提交进行诊断。计数器不模拟标点挤格或数字合格等其他地方细则。
 
