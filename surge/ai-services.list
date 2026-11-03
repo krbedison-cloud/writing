@@ -1,0 +1,66 @@
+# Surge RULE-SET: AI Services (fixed egress)
+# Updated: 2026-11-03
+# Format: One match rule per line, NO policy appended.
+# Usage: RULE-SET,https://raw.githubusercontent.com/krbedison-cloud/writing/main/surge/ai-services.list,AI-Fixed
+# Configure AI-Fixed as a manual select policy group with a fixed proxy.
+# Rules must precede broad rules and FINAL.
+#
+# OpenAI / ChatGPT / Codex
+DOMAIN-SUFFIX,openai.com
+DOMAIN-SUFFIX,chatgpt.com
+DOMAIN-SUFFIX,oaistatic.com
+DOMAIN-SUFFIX,oaiusercontent.com
+DOMAIN-SUFFIX,oaistatsig.com
+DOMAIN-SUFFIX,openaimerge.com
+#
+# Gemini / AI Studio / NotebookLM (service-specific Google hosts only)
+DOMAIN,gemini.google.com
+DOMAIN,aistudio.google.com
+DOMAIN,generativelanguage.googleapis.com
+DOMAIN,ai.google.dev
+DOMAIN,makersuite.google.com
+DOMAIN,notebooklm.google.com
+DOMAIN-SUFFIX,deepmind.google
+DOMAIN-SUFFIX,deepmind.com
+#
+# Grok / xAI
+DOMAIN-SUFFIX,grok.com
+DOMAIN-SUFFIX,x.ai
+#
+# Claude / Anthropic
+DOMAIN-SUFFIX,anthropic.com
+DOMAIN-SUFFIX,claude.ai
+DOMAIN-SUFFIX,claude.com
+DOMAIN-SUFFIX,claudeusercontent.com
+#
+# Perplexity
+DOMAIN-SUFFIX,perplexity.ai
+#
+# AI APIs and platforms
+DOMAIN-SUFFIX,openrouter.ai
+DOMAIN-SUFFIX,deepseek.com
+DOMAIN-SUFFIX,poe.com
+DOMAIN-SUFFIX,character.ai
+DOMAIN-SUFFIX,huggingface.co
+DOMAIN-SUFFIX,hf.co
+DOMAIN-SUFFIX,replicate.com
+DOMAIN-SUFFIX,together.ai
+DOMAIN-SUFFIX,fireworks.ai
+DOMAIN-SUFFIX,cerebras.ai
+DOMAIN-SUFFIX,groq.com
+DOMAIN-SUFFIX,mistral.ai
+DOMAIN-SUFFIX,cohere.com
+DOMAIN-SUFFIX,cohere.ai
+#
+# AI media
+DOMAIN-SUFFIX,elevenlabs.io
+DOMAIN-SUFFIX,runwayml.com
+DOMAIN-SUFFIX,midjourney.com
+#
+# Notes:
+# - Shared authentication/CDN domains are intentionally excluded to avoid
+#   forcing unrelated services onto the AI proxy.
+# - GitHub is intentionally excluded; Codex cloud GitHub operations execute
+#   in OpenAI cloud and do not traverse a home Surge gateway.
+# - Static policy selection reduces local proxy switching but does not
+#   guarantee a static public IP or prevent cloud-side disconnections.
