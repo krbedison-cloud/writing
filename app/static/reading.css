@@ -216,3 +216,11 @@ footer { font-size: 12px; color: var(--muted); }
 
 .answer-area::placeholder { color: var(--muted); opacity: 1; }
 :root[data-reading-theme="night"] .avatar { background: #3d5141; color: var(--ink); }
+
+.portrait-verdict { margin-top: 18px; padding: 16px 18px; border-left: 3px solid var(--green); background: var(--paper); }
+.portrait-verdict h3 { margin-bottom: 8px; }
+.portrait-notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin-top: 24px; }
+.portrait-notes section { min-width: 0; }
+.portrait-notes h3 { margin-bottom: 10px; }
+.portrait-notes li { line-height: 1.9; overflow-wrap: anywhere; }
+@media(max-width:800px) { .portrait-notes { grid-template-columns: 1fr; gap: 18px; } }

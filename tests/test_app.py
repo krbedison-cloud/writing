@@ -473,16 +473,39 @@ class AppTests(unittest.TestCase):
         self.assertEqual(len(updated['synthesis']['action_plan']),12)
         self.assertEqual(sum(c.args[1].startswith('独立批改') for c in self.mock.call_args_list),count)
 
-    def test_existing_profile_is_brief_without_rewriting_saved_data(self):
-        result=dict(analysis='这是长期观察。'*100,strengths=['优势'+str(i) for i in range(8)],weaknesses=['短板'+str(i) for i in range(8)],action_plan=['训练'+str(i) for i in range(8)])
+    def test_legacy_profile_requests_rewrite_and_preserves_original(self):
+        result=dict(analysis='这是旧版长期观察…',strengths=['旧优势'],weaknesses=['旧短板'],action_plan=['旧训练'])
         db=self.app.state.service.db
         db.setting('portrait',dict(result=result,signature='old',name='教练',model='good',history_count=1,updated_at='2026-01-01'))
-        brief=self.client.get('/api/profile').json()['portrait']['result']
-        self.assertLessEqual(len(brief['analysis']),120)
-        self.assertEqual(len(brief['strengths']),2)
-        self.assertEqual(len(brief['weaknesses']),2)
-        self.assertEqual(len(brief['action_plan']),3)
+        profile=self.client.get('/api/profile').json()
+        self.assertTrue(profile['portrait_needs_refresh'])
+        self.assertEqual(profile['portrait']['result'],result)
         self.assertEqual(db.setting('portrait')['result'],result)
+
+    def test_profile_rewrites_bad_prose_once_and_preserves_previous_on_failure(self):
+        p=self.make_paper();self.submit(p)
+        for j in self.client.get('/api/jobs').json():
+            if j['kind']=='profile':self.wait_job(j['id'])
+        bad=dict(analysis='基于7条记录，六维均分83.7。',strengths=['f8农业题审题95。'],weaknesses=['材料运用不充分…'],action_plan=['建立材料段落与答案要点映射表。'*20])
+        good=dict(analysis='先补齐材料要点，再精简表达。',strengths=['分条作答比较清楚。'],weaknesses=['具体措施仍有遗漏。'],action_plan=['列出各段材料的措施，写完后逐项核对。'])
+        async def rewritten(provider,task,payload):
+            if task.startswith('基于全部'):return bad
+            if task.startswith('重写能力观察'):return good
+            return await fake_model(provider,task,payload)
+        self.mock.side_effect=rewritten
+        j=self.client.post('/api/profile/refresh',json={'provider_id':self.master}).json()
+        self.assertEqual(self.wait_job(j['id'])['status'],'completed')
+        calls=[c for c in self.mock.call_args_list if c.args[1].startswith('重写能力观察')]
+        self.assertEqual(len(calls),1);self.assertEqual(set(calls[0].args[2]),{'draft'})
+        profile=self.client.get('/api/profile').json()
+        self.assertFalse(profile['portrait_needs_refresh'])
+        self.assertEqual(profile['portrait']['result'],good)
+        previous=self.app.state.service.db.setting('portrait')
+        async def still_bad(provider,task,payload):return bad
+        self.mock.side_effect=still_bad
+        j=self.client.post('/api/profile/refresh',json={'provider_id':self.master}).json()
+        self.assertEqual(self.wait_job(j['id'])['status'],'failed')
+        self.assertEqual(self.app.state.service.db.setting('portrait'),previous)
 
     def test_profile_all_history(self):
         p=self.make_paper();self.submit(p);self.submit(p,1)
@@ -492,7 +515,7 @@ class AppTests(unittest.TestCase):
         calls=[c for c in self.mock.call_args_list if c.args[1].startswith('基于全部')]
         rows=calls[-1].args[2]['all_history']
         self.assertEqual(len(rows),2)
-        self.assertTrue(all('reviews' not in row and 'weaknesses' in row for row in rows))
+        self.assertTrue(all('id' not in row and 'reviews' not in row and 'weaknesses' in row for row in rows))
         self.assertNotIn('原答案',json.dumps(rows,ensure_ascii=False))
     def test_large_history_is_batched_without_dropping_records(self):
         p=self.make_paper();a=self.submit(p)

@@ -11,7 +11,7 @@ from .llm import call_model, ModelError, TruncatedOutputError
 from .materials import prepare_paper, model_question
 from .schemas import Grade, Synthesis, Portrait, PaperInput, ReferenceDraft, DIMENSIONS, KINDS
 from .paper import check_paper
-from .portrait_summary import BRIEF_POLICY, brief_portrait, brief_points
+from .portrait_summary import BRIEF_POLICY, NOTES_VERSION, readable_portrait, brief_points, rewrite_evidence
 from .output_validation import validation_message
 from .import_validation import FORMAT, normalize_import, import_errors
 
@@ -280,9 +280,8 @@ class Service:
         timeline = [{'id':a['id'],'date':a['created_at'], 'score':round(a['mean_score']/KINDS[a['question_snapshot']['kind']][1]*100, 1),'kind':a['question_snapshot']['kind']} for a in reversed(valid)]
         signature = hashlib.sha256(dumps([(a['id'], a['mean_score'], a.get('finished_at')) for a in valid]).encode()).hexdigest()
         portrait = self.db.setting('portrait')
-        if portrait:
-            portrait = dict(portrait, result=brief_portrait(portrait['result']))
-        return dict(total_attempts=len(attempts), graded_count=len(valid), paper_count=len(self.db.all('papers')), dimensions=dims, forecast=forecast, estimated_total=total, xp=xp, level=xp//100+1, level_progress=xp%100, timeline=timeline, signature=signature, portrait=portrait, portrait_stale=bool(portrait and portrait.get('signature') != signature), note='预估取各题型最近5次有效批改均分相加；六维分取全部有效作答的模型维度均分。重复练习、题目难度与模型偏差均会影响结果，不是官方成绩或排名。缺任一题型时不输出总分。')
+        portrait_needs_refresh = bool(portrait and portrait.get('notes_version') != NOTES_VERSION)
+        return dict(total_attempts=len(attempts), graded_count=len(valid), paper_count=len(self.db.all('papers')), dimensions=dims, forecast=forecast, estimated_total=total, xp=xp, level=xp//100+1, level_progress=xp%100, timeline=timeline, signature=signature, portrait=portrait, portrait_needs_refresh=portrait_needs_refresh, portrait_stale=bool(portrait and portrait.get('signature') != signature), note='预估取各题型最近5次有效批改均分相加；六维分取全部有效作答的模型维度均分。重复练习、题目难度与模型偏差均会影响结果，不是官方成绩或排名。缺任一题型时不输出总分。')
     async def portrait(self, j, provider_id):
         async with self.profile_lock:
             try:
@@ -296,7 +295,7 @@ class Service:
                     if a.get('mean_score') is None:
                         continue
                     good = [g for g in a['grades'] if g['status'] == 'completed']
-                    history.append({'id':a['id'], 'date':a['created_at'], 'kind':a['question_snapshot']['kind'],
+                    history.append({'date':a['created_at'], 'kind':a['question_snapshot']['kind'],
                                     'score':a['mean_score'], 'full_score':KINDS[a['question_snapshot']['kind']][1],
                                     'dimensions':{k:round(statistics.mean(g['result']['dimensions'][k] for g in good),1) for k in DIMENSIONS},
                                     'score_spread':a.get('score_spread'),
@@ -320,15 +319,23 @@ class Service:
                     reduced = []
                     for index, batch in enumerate(batches):
                         self.stage(j, f'历史较多，正在分析第 {index+1}/{len(batches)} 组证据')
-                        part = await self.ask(provider, '历史分块分析：'+BRIEF_POLICY+'返回 {analysis,strengths,weaknesses,action_plan}，analysis为文字其余为字符串数组。保留本组记录的时间跨度、变化、共性不足、反例与不确定性；不能把本组说成全部历史。不虚构分数。只保留本组最重要的变化和训练重点。', {'records':batch})
-                        summary = brief_portrait(Portrait.model_validate(part).model_dump())
+                        part = await self.ask(provider, '历史分块分析：只保留关键变化、优势和短板，不列编号和分数，全文不超过500字。返回 {analysis,strengths,weaknesses,action_plan}，analysis为文字其余为字符串数组。保留本组记录的时间跨度、变化、共性不足、反例与不确定性；不能把本组说成全部历史。不虚构分数。只保留本组最重要的变化和训练重点。', {'records':batch})
+                        summary = Portrait.model_validate(part).model_dump()
                         reduced.append({'record_count':sum(row.get('record_count',1) for row in batch),'summary':summary})
                     if len(dumps(reduced)) >= len(dumps(evidence)):
                         raise ModelError('历史分块摘要过长，无法继续压缩；数值统计已更新，请换用能遵循长度要求的主模型')
                     evidence, compressed = reduced, True
-                raw = await self.ask(provider, '基于全部历史证据生成简短能力观察，'+BRIEF_POLICY+'返回 {analysis,strengths,weaknesses,action_plan}。analysis 为文字，其余为字符串数组。解释进步与反复问题、缺失题型、样本偏差和跨模型差异，给出下一轮训练建议。不重算程序统计、不虚构排名、上岸概率或确定的考试分数。所有历史均含在记录中，单条为压缩摘要，不代表已阅读未提供的完整答案。', {'statistics':{k:v for k,v in stats.items() if k not in ('portrait','timeline')}, 'all_history':evidence, 'history_is_compressed':compressed, 'record_count':len(history)})
-                result = brief_portrait(Portrait.model_validate(raw).model_dump())
-                self.db.setting('portrait', dict(result=result, signature=stats['signature'], model=provider['model'], name=provider['name'], updated_at=now(), history_count=len(history)))
+                raw = await self.ask(provider, '基于全部历史证据生成简短能力观察，'+BRIEF_POLICY+'返回 {analysis,strengths,weaknesses,action_plan}。只选最重要的一两项能力变化和下一步动作，不逐维解释、不逐题复盘。缺失题型不推断，不虚构排名或考试分数。所有有效练习都包含在历史摘要中，仅依据提供的证据判断。', {'statistics':{'dimensions':stats['dimensions'], 'forecast':stats['forecast']}, 'all_history':evidence, 'history_is_compressed':compressed, 'record_count':len(history)})
+                try:
+                    result = readable_portrait(raw)
+                except ValidationError:
+                    self.stage(j, '正在把观察重写为完整短句')
+                    rewritten = await self.ask(provider, '重写能力观察：'+BRIEF_POLICY+'上次草稿违反短句或表达要求，请概括重写，不补充新事实。', {'draft':rewrite_evidence(raw)})
+                    try:
+                        result = readable_portrait(rewritten)
+                    except ValidationError as exc:
+                        raise ModelError('模型仍未生成清晰短句，未替换已有观察；请换用主模型后重新生成要点') from exc
+                self.db.setting('portrait', dict(result=result, notes_version=NOTES_VERSION, signature=stats['signature'], model=provider['model'], name=provider['name'], updated_at=now(), history_count=len(history)))
                 self.finish(j)
             except Exception as exc:
                 self.finish(j, public_error(exc))

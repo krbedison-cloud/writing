@@ -59,6 +59,8 @@ class MockModel(BaseHTTPRequestHandler):
             result=dict(analysis='模拟汇总：各模型独立批改已完成，建议加强材料要点的分类与表达。',consensus=['需要更加具体的材料支撑'],disagreements=['评分存在一定分差'],action_plan=[f'训练{i}：先列出要点，再用短句组织' for i in range(12)])
         elif task.startswith('基于全部'):
             result=dict(analysis='模拟历史画像：已分析全部历史摘要，当前应加强材料运用与结构表达。'*50,strengths=['能够持续完成练习']*12,weaknesses=['要点提炼有待加强']*12,action_plan=[f'训练{i}：每天复盘一个遗漏要点' for i in range(12)])
+        elif task.startswith('重写能力观察'):
+            result=dict(analysis='材料运用仍需加强，先补齐要点再精简表达。',strengths=['能够坚持完成练习。'],weaknesses=['材料中的具体措施仍有遗漏。'],action_plan=['作答前列出各段措施，写完后逐项核对。','每次复盘一个遗漏要点，并重新写进答案。'])
         else:result={'ok':True}
         self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
         self.wfile.write(json.dumps({'choices':[{'message':{'content':json.dumps(result,ensure_ascii=False)},'finish_reason':'stop'}]}).encode())
@@ -425,9 +427,23 @@ def main():
                 page.goto(base+'/#profile');expect(page.locator('.forecast-total')).to_contain_text('85',timeout=20000)
                 expect(page.get_by_role('heading',name='AI 的长期观察 · 要点',exact=True)).to_be_visible()
                 portrait=httpx.get(base+'/api/profile').json()['portrait']['result']
-                assert len(portrait['analysis'])<=120 and len(portrait['action_plan'])<=3
+                assert len(portrait['analysis'])<=60 and len(portrait['action_plan'])<=3
                 assert len(portrait['strengths'])<=2 and len(portrait['weaknesses'])<=2
+                expect(page.get_by_role('heading',name='下一次怎么练',exact=True)).to_be_visible()
+                assert '…' not in json.dumps(portrait,ensure_ascii=False)
                 page.screenshot(path='/tmp/shenlun-profile-tested.png',full_page=True)
+                old_stats=httpx.get(base+'/api/profile').json()
+                old_stats['portrait_needs_refresh']=True
+                old_stats['portrait']['result']['analysis']='旧报告f8编号83.7和截断句子…'
+                page.route('**/api/profile',lambda route:route.fulfill(json=old_stats))
+                page.reload();expect(page.get_by_text('这份观察是旧版长报告',exact=False)).to_be_visible()
+                expect(page.get_by_text('旧报告f8编号83.7和截断句子…',exact=True)).to_have_count(0)
+                page.unroute('**/api/profile');page.reload()
+                expect(page.get_by_role('heading',name='当前结论',exact=True)).to_be_visible()
+                page.set_viewport_size({'width':390,'height':844});page.reload()
+                expect(page.get_by_role('heading',name='下一次怎么练',exact=True)).to_be_visible()
+                assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+                page.set_viewport_size({'width':1440,'height':900})
                 page.goto(base+'/#history');expect(page.locator('tbody tr')).to_have_count(3)
                 page.get_by_role('link',name='查看 →').first.click();expect(page.get_by_text(answers[-1]['answer'],exact=True)).to_be_visible()
                 page.set_viewport_size({'width':390,'height':844});page.goto(base+'/#overview');page.wait_for_selector('.hero')
