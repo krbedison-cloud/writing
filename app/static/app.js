@@ -149,7 +149,7 @@ function renderAttempt(a){
  if(activeReview)state.reviewProvider=activeReview.provider_id;
  const busy=['queued','running'].includes(a.status);
  return '<div id="attempt-progress">'+head('这一次，离更好的自己近一点',sourceText(q.source)+' · 第 '+q.number+' 题 · '+date(a.created_at),`<a class="btn" href="#history">返回历史</a>${!busy&&a.status!=='completed'?btn('retry',a.status==='summary_failed'&&good.length===a.providers.length?'重试汇总':'重试失败项','primary'):''}`,'REVIEW & REFLECTION')+
- (busy?'<div class="notice"><span class="busy-dot"></span>各模型正在独立批改，随后由主模型汇总。你可以离开此页，后台会继续执行。</div>':'')+
+ (busy?'<div class="notice"><span class="busy-dot"></span>'+esc(a.grading_stage||'各教练批改中')+'。已返回的评分可先阅读。你可以离开此页，后台继续执行。</div>':'')+
  (!a.grading_policy||a.grades.some(g=>g.status==='completed'&&!g.grading_policy)?'<div class="notice warn">此记录使用旧版批改提示。若评价与题干不符，可保留本记录，并回原题使用原答案重新提交批改。</div>':'')+
  (a.error?`<div class="notice error">${esc(a.error)}</div>`:'')+
  `<div class="score-cards"><div class="score-card"><p>有效批改均分</p><div class="score">${a.mean_score??'—'}<small> / ${full[q.kind]}</small></div><span class="tiny muted">${good.length} / ${a.providers.length} 个模型成功 · 分差 ${a.score_spread??'—'}</span></div>${a.providers.map(p=>coachScoreCard(a,p,busy)).join('')}</div>`+
@@ -157,12 +157,28 @@ function renderAttempt(a){
  `</div><div class="grid-main"><div class="stack"><section class="card" id="attempt-synthesis"><div class="card-head"><h2>主模型 · 汇总诊断</h2>${badge(a.master.name)}</div>${a.synthesis?`<div class="prose">${esc(a.synthesis.analysis)}</div><div class="grade-section"><h3>教练们的共识</h3>${list(a.synthesis.consensus)}<h3>需要辨别的分歧</h3>${a.synthesis.disagreements.length?list(a.synthesis.disagreements):'<p class="small muted">本次未报告明显分歧。</p>'}<h3>下一次，就这样改</h3>${list(a.synthesis.action_plan)}</div>`:empty(busy?'诊断正在路上':'尚无汇总诊断',busy?'先认真写，再一起看清得失。':'请检查失败原因后重试。')}</section></div><section class="card"><div class="card-head"><h2>当时的原答案</h2>${badge(kinds[q.kind])}</div><div class="prose">${esc(a.answer)}</div><details class="plain-details"><summary>查看本次题干与材料快照</summary><div class="prose">${esc(q.prompt)}</div><h3 class="section-gap">${esc(q.material_scope?.note||'当时存档的材料')}</h3><div class="material reading-text">${readingText(q.materials)}</div></details><a class="btn small section-gap" href="#practice/${a.paper_id}/${a.question_id}">再练一次 ${icon('arrow')}</a></section></div>`+
  `<section class="card section-gap"><div class="card-head"><h2>每位教练的详细批改与参考范文</h2><span class="subtitle">AI 生成 · 非官方标准答案</span></div><div id="review-tabs" class="tabs">${good.map(g=>`<button data-action="review-tab" data-id="${g.provider_id}" class="${g.provider_id===activeReview?.provider_id?'active':''}">${esc(g.name)} · ${g.result.score} 分</button>`).join('')}</div><div id="review-body">${activeReview?reviewBody(activeReview):empty('等待第一份批改结果','各模型的评分、证据与范文会在这里分别呈现。')}</div></section>`;
 }
+const coachStages={queued:'排队等待接口',requesting:'批改请求中',validating:'校验评分',reference_repair:'评分已返回 · 范文校正中',completed:'已完成',failed:'失败',interrupted:'已中断'};
+function duration(seconds){seconds=Math.max(0,Math.floor(seconds));return seconds<60?seconds+'秒':Math.floor(seconds/60)+'分'+seconds%60+'秒';}
+function updateCoachClocks(){
+ $$('[data-clock-start]').forEach(node=>{
+  const start=Date.parse(node.dataset.clockStart),end=node.dataset.clockEnd?Date.parse(node.dataset.clockEnd):Date.now();
+  node.textContent=Number.isFinite(start)&&Number.isFinite(end)?(node.dataset.clockEnd?'总用时 ':'本阶段已等待 ')+duration((end-start)/1000):'';
+ });
+}
+setInterval(updateCoachClocks,1000);
 function coachScoreCard(a,p,busy){
  const g=a.grades.find(g=>g.provider_id===p.id),completed=g?.status==='completed';
  const retrying=busy&&(a.retry_provider_ids||[]).includes(p.id);
  const retryable=!completed&&(!busy||g?.status==='failed'||retrying);
- const status=retrying?'正在重试':g?.status==='failed'?'失败':busy?'等待中':'未完成';
- return `<div class="score-card" data-provider="${esc(p.id)}"><p>${esc(p.name)}</p>${completed?`<div class="score">${g.result.score}<small> / ${full[a.question_snapshot.kind]}</small></div>`:badge(status,g?.status==='failed'&&!retrying?'red':'blue')}<span class="tiny muted">${esc(p.model)}</span>${g?.error&&!retrying?`<p class="small">${esc(g.error)}</p>`:''}${retryable?`<div class="section-gap"><button type="button" class="btn small" data-action="retry-coach" data-provider="${esc(p.id)}" ${busy?'disabled title="本次任务仍在执行，完成后可单独重试"':''}>${retrying?'正在重试':busy?'稍后重试':'单独重试'}</button>${busy&&!retrying?'<p class="tiny muted">本次任务完成后可重试</p>':''}</div>`:''}</div>`;
+ const status=coachStages[g?.stage]||(completed?'已完成':retrying?'正在重试':g?.status==='failed'?'失败':busy?'等待中':'未完成');
+ const config=state.providers.find(item=>item.id===p.id)||p;
+ const currentLimit=config.max_tokens||6000;
+ const suggested=[32768,65536,131072].find(value=>value>currentLimit&&value>=Math.min(131072,Math.max(32768,currentLimit*2)));
+ const truncated=g?.error_code==='output_truncated'||g?.error?.includes('输出被截断');
+ const response=g?.request_started_at&&g?.response_received_at?'<p class="tiny muted">批改响应 '+duration((Date.parse(g.response_received_at)-Date.parse(g.request_started_at))/1000)+'</p>':'';
+ const clock=g?.stage_started_at?`<p class="tiny muted" data-clock-start="${esc(g.finished_at?(g.queued_at||g.stage_started_at):g.stage_started_at)}" data-clock-end="${esc(g.finished_at||'')}"></p>`:'';
+ const usage=g?.usage?.output_tokens!=null?`<p class="tiny muted">初评接口输出 ${g.usage.output_tokens} tokens${g.usage.reasoning_tokens!=null?' · 思考 '+g.usage.reasoning_tokens+' tokens':''}</p>`:'';
+ return `<div class="score-card" data-provider="${esc(p.id)}"><p>${esc(p.name)}</p>${completed?`<div class="score">${g.result.score}<small> / ${full[a.question_snapshot.kind]}</small></div>`:''}${badge(status,g?.status==='failed'&&!retrying?'red':'blue')}${clock}${response}${usage}<span class="tiny muted">${esc(p.model)}</span>${g?.error&&!retrying?`<p class="small">${esc(g.error)}</p>`:''}${retryable?`<div class="section-gap"><button type="button" class="btn small" data-action="retry-coach" data-provider="${esc(p.id)}" ${busy?'disabled title="本次任务仍在执行，完成后可单独重试"':''}>${retrying?'正在重试':busy?'稍后重试':'单独重试'}</button>${busy&&!retrying?'<p class="tiny muted">本次任务完成后可重试</p>':''}${truncated&&suggested?`<button type="button" class="btn small section-gap" data-action="boost-retry" data-provider="${esc(p.id)}" data-limit="${suggested}" ${busy?'disabled':''}>提高至 ${suggested} 并重试</button><p class="tiny muted">请确认服务商支持此输出上限</p>`:''}</div>`:''}</div>`;
 }
 function reviewBody(g){const r=g.result;return `<div class="row between wrap"><h3>${esc(g.name)} <span class="tiny muted">${esc(g.model)}</span></h3><span class="tiny muted">范文来自此模型，未由主模型改写</span></div>${r.task_analysis?`<div class="paper-check section-gap"><h3>本题审题 · ${esc(r.task_analysis.genre)}</h3><p>${esc(r.task_analysis.task)}</p><h4>题干要求</h4>${list(r.task_analysis.requirements)}<h4>本题材料依据</h4>${list(r.task_analysis.material_basis)}</div>`:'<p class="paper-hint section-gap">模型未提供有效审题分析，请结合题干与评分证据核对。</p>'}<div class="row wrap section-gap">${dimensions.map(k=>badge(k+' '+r.dimensions[k])).join(' ')}</div><div class="grid-main grade-section"><div><h3>值得保持</h3>${list(r.strengths)}<h3>不足与扣分依据</h3>${list(r.weaknesses)}${list(r.evidence)}</div><div><h3>具体改法</h3>${list(r.suggestions)}</div></div>${referenceBody(g)}`;}
 function referenceBody(g){
@@ -193,7 +209,7 @@ function updateLiveRegion(id,html){
 function setReviewBody(g){updateLiveRegion('review-body',reviewBody(g));mountReferencePapers();}
 function primeAttempt(){
  liveMarkup.clear();for(const id of liveRegions){const node=document.getElementById(id);if(node)liveMarkup.set(id,node.innerHTML);}
- mountReferencePapers();
+ mountReferencePapers();updateCoachClocks();
 }
 let attemptRefreshToken=0;
 async function refreshAttempt(){
@@ -203,7 +219,7 @@ async function refreshAttempt(){
  if(hash!==location.hash||token!==state.routeToken||refresh!==attemptRefreshToken)return;
  state.attempt=a;const template=document.createElement('template');template.innerHTML=renderAttempt(a);
  for(const id of liveRegions){const node=template.content.querySelector('#'+id);if(node)updateLiveRegion(id,node.innerHTML);}
- mountReferencePapers();
+ mountReferencePapers();updateCoachClocks();
 }
 async function models(){return head('找到适合你的 AI 教练','连接不同视角，让每一份评价都经得起对照。',btn('add-model',`${icon('plus')} 添加接口`,'primary'),'MODEL CONNECTIONS')+
  '<div class="notice">支持任意数量的接口配置：OpenAI 兼容（含 DeepSeek、通义、硅基流动与 Ollama）、Anthropic Claude、Google Gemini。API Key 在服务器本地加密保存，浏览器只能看到是否已设置。</div>'+
@@ -253,8 +269,8 @@ window.addEventListener('hashchange',()=>route());
 function showDialog(content){$('#editor-content').innerHTML=content;$('#editor').showModal();}
 function closeDialog(){$('#editor').close();}
 function field(label,name,value='',type='text',attrs=''){return `<label class="field">${label}<input name="${name}" type="${type}" value="${esc(value)}" ${attrs}></label>`;}
-function modelEditor(id){const p=state.providers.find(p=>p.id===id)||{protocol:'openai',max_tokens:6000,timeout_seconds:600};state.editProvider=id;
- showDialog(`<div class="dialog-head"><h2>${id?'编辑模型接口':'连接一位 AI 教练'}</h2>${btn('close-dialog',icon('close'),'small','aria-label="关闭"')}</div><form id="model-form"><div class="field-grid">${field('显示名称','name',p.name||'','text','required maxlength="80"')}<label class="field">接口协议<select name="protocol" id="protocol">${option('openai','OpenAI 兼容',p.protocol==='openai')}${option('anthropic','Anthropic Claude',p.protocol==='anthropic')}${option('gemini','Google Gemini',p.protocol==='gemini')}</select></label><label class="field full">API 根地址<input name="base_url" type="url" value="${esc(p.base_url||'https://api.openai.com/v1')}" required placeholder="https://api.openai.com/v1"></label>${field('模型 ID','model',p.model||'','text','required placeholder="填写服务商提供的准确模型 ID" maxlength="160"')}${field('输出 token 上限','max_tokens',p.max_tokens,'number','min="1000" max="32000" required')}${field('等待时限（秒）','timeout_seconds',p.timeout_seconds??600,'number','min="60" max="1800" step="1" required')}<label class="field full">API Key ${id?'· 留空保留当前密钥':''}<input name="api_key" type="password" autocomplete="new-password" placeholder="${p.has_key?'已加密保存，留空不修改':'仅发送到你配置的接口'}"></label></div><div class="notice">接口地址和密钥需由你向服务商申请。每次请求默认最多等待600秒，可为慢模型设置60–1800秒；若返回被截断，请提高输出上限。使用本地模型时密钥可留空。</div><button type="submit" class="btn primary">保存接口</button></form>`);
+function modelEditor(id){const p=state.providers.find(p=>p.id===id)||{protocol:'openai',max_tokens:32768,timeout_seconds:600};state.editProvider=id;
+ showDialog(`<div class="dialog-head"><h2>${id?'编辑模型接口':'连接一位 AI 教练'}</h2>${btn('close-dialog',icon('close'),'small','aria-label="关闭"')}</div><form id="model-form"><div class="field-grid">${field('显示名称','name',p.name||'','text','required maxlength="80"')}<label class="field">接口协议<select name="protocol" id="protocol">${option('openai','OpenAI 兼容',p.protocol==='openai')}${option('anthropic','Anthropic Claude',p.protocol==='anthropic')}${option('gemini','Google Gemini',p.protocol==='gemini')}</select></label><label class="field full">API 根地址<input name="base_url" type="url" value="${esc(p.base_url||'https://api.openai.com/v1')}" required placeholder="https://api.openai.com/v1"></label>${field('模型 ID','model',p.model||'','text','required placeholder="填写服务商提供的准确模型 ID" maxlength="160"')}${field('输出 token 上限','max_tokens',p.max_tokens,'number','min="1000" max="131072" required')}${field('等待时限（秒）','timeout_seconds',p.timeout_seconds??600,'number','min="60" max="1800" step="1" required')}<label class="field full">API Key ${id?'· 留空保留当前密钥':''}<input name="api_key" type="password" autocomplete="new-password" placeholder="${p.has_key?'已加密保存，留空不修改':'仅发送到你配置的接口'}"></label></div><div class="notice">接口地址和密钥需由你向服务商申请。每次请求默认最多等待600秒，可为慢模型设置60–1800秒；新接口默认输出上限32768 tokens，可设1000–131072；已有配置保留。提高上限须以服务商支持值为准，思考token也可能占用输出预算。使用本地模型时密钥可留空。</div><button type="submit" class="btn primary">保存接口</button></form>`);
 }
 function questionEditor(q={number:1,kind:'summary',prompt:'',word_min:0,word_max:0,classification_note:'人工校对'}){
  const mode=q.material_mode||'auto';
@@ -281,6 +297,13 @@ async function act(el){const action=el.dataset.action;
   await post('/papers/'+state.paper.id+'/classify',{provider_id:$('#classify-provider').value});toast('AI 识别已开始，完成后自动刷新');return;
  }
  if(action==='regenerate-reference'){state.reviewProvider=el.dataset.provider;delete state.referenceVersions[el.dataset.provider];const j=await post('/attempts/'+state.attempt.id+'/references',{provider_id:el.dataset.provider,direction:el.dataset.direction,reference_id:el.dataset.reference});state.jobs=[j,...state.jobs];toast('已开始单独重写范文，原批改分数保留');return refreshAttempt();}
+ if(action==='boost-retry'){
+  const p=state.providers.find(p=>p.id===el.dataset.provider),limit=Number(el.dataset.limit);
+  if(!p||!Number.isInteger(limit)||limit<=p.max_tokens||limit>131072)throw Error('请刷新后重试，或在模型设置调整输出上限');
+  const updated=await api('/providers/'+p.id,{method:'PUT',body:JSON.stringify({name:p.name,protocol:p.protocol,base_url:p.base_url,model:p.model,max_tokens:limit,timeout_seconds:p.timeout_seconds??600,api_key:''})});
+  state.providers=state.providers.map(item=>item.id===p.id?updated:item);
+  await post('/attempts/'+state.attempt.id+'/retry',{provider_id:p.id});toast('已提高输出上限并单独重试，其他评分保留');return refreshAttempt();
+ }
  if(action==='retry-coach'){await post('/attempts/'+state.attempt.id+'/retry',{provider_id:el.dataset.provider});toast('开始重试这位教练，其他已成功结果保留');return refreshAttempt();}
  if(action==='retry'){await post('/attempts/'+state.attempt.id+'/retry');toast('开始重试失败项');return refreshAttempt();}
  if(action==='refresh-profile'){

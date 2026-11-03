@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh | bash
 ```
 
-安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.12` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
+安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.13` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
 
 配置保存在 `~/shenlun-studio/.env`，程序只监听本机 `18086` 端口；数据使用 Docker 数据卷 `shenlun-studio-data`。安装脚本会输出实际访问地址和停止命令。重复运行安装命令不会覆盖已有 `.env`；如版本配置文件已有人工修改，会停止而不是覆盖。发布的新版本可以通过再次执行安装命令更新，既有数据保留。
 
@@ -39,7 +39,7 @@ SHENLUN_DIR="$HOME/Applications/shenlun-studio" bash install-shenlun.sh
 公开镜像可直接拉取：
 
 ```bash
-docker pull ghcr.io/krbedison-cloud/writing:v0.1.12
+docker pull ghcr.io/krbedison-cloud/writing:v0.1.13
 ```
 
 GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架构镜像并创建对应标签的 Release。发布新版本时同步更新 VERSION、安装脚本默认版本与部署配置。GHCR 首次创建的包可能是私有的；仓库拥有者可到 GitHub 的 Packages → writing → Package settings 将包设为 Public，之后无需登录即可拉取。即使没有更改包的可见性，上面的安装器仍能使用公开 Release 中的预构建 Docker 镜像完成安装，不必登录 GHCR。
@@ -49,7 +49,7 @@ GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架
 在运行 Docker Desktop 的 Mac mini 上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.12/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.13/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
 ```
 
 安装器会保留已有数据和其他配置，持久设置 `APP_BIND=0.0.0.0`、`ALLOW_LAN=1` 以及指定端口。Docker 会在 Mac 所有 IPv4 接口监听 `18086`，应用允许以私有局域网 IP 访问；原来的主机白名单和同源写入检查仍有效。IP 变化后通常不需要重新配置白名单。
@@ -63,7 +63,7 @@ Mac 防火墙如提示 Docker 接收入站连接，选择允许。设备需要�
 恢复仅本机访问：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.12/install.sh | SHENLUN_LAN=0 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.13/install.sh | SHENLUN_LAN=0 bash
 ```
 
 未指定 `SHENLUN_LAN` 时，保留现有的访问模式。
@@ -118,6 +118,10 @@ PDF 内文的硬换行仅在显示时整理为段落；原始材料、题干、�
 更新不会重算旧分数或自动付费重批。旧版批改记录保留原答案、分数及范文，并提示可回原题用原答案重新提交；重试失败项仍只重试失败教练，已成功的旧结果不会被悄悄改写。新批改记录保存提示策略版本，便于区分旧版评价。
 
 模型输出兼容：数字字符串（如“16分”）、包含明确score字段的维度对象、维度记录列表，以及以整段文字返回的建议列表会无损转为程序需要的结构。缺失/不完整的可选审题分析不会作废有效评分，报告会提示其缺失。总分和六维分仍需合法且在范围内，缺失核心评分证据或高分答案仍会失败；不会补造评分、自动缩放或截断越界分数。结构错误会显示具体字段及原因，不展示模型原始返回或密钥；可用该教练的“单独重试”重新请求。
+
+批改进度：教练卡片分别显示排队等待接口、批改请求中、评分校验、范文校正、完成或失败，并显示阶段等待时间、总用时与模型响应耗时。排队等待不计入模型请求超时；排队状态来自全局4请求并发限制。token用量仅展示接口实际返回的数字，不模拟模型内部思考进度或完成百分比。
+
+速度优化：评分与初版范文通过校验后立即存档展示，不再等待自动范文校正；主模型汇总与范文校正可以并行，汇总完成后先展示，校正仍在进行时保留后台状态。只压缩重复的审题/评语，不省略本题材料或范文最低字数要求。提高token上限本身不等于加快模型生成速度，实际耗时取决于服务商及所选模型。原答案、成功评分与范文版本仍保留，截断不会按零分计入均分。
 
 ### 材料高亮、25格稿纸与范文校验
 
@@ -185,7 +189,7 @@ PDF 内文的硬换行仅在显示时整理为段落；原始材料、题干、�
 | Gemini | `https://generativelanguage.googleapis.com/v1beta` | 追加 `/models/{模型ID}:generateContent` |
 | OpenAI 兼容 / Ollama | `http://host.docker.internal:11434/v1` | Mac 宿主机的本地模型；密钥可留空 |
 
-模型 ID 请向服务商确认，不能填产品显示名称。选择能输出 JSON、上下文足够容纳整份试卷的文本模型。默认输出上限 6000 tokens，可调整到 32000；推理模型可能需要更高上限。程序对返回结构、六维范围、题目满分与输出截断进行校验。部分 OpenAI 兼容服务不支持 `max_completion_tokens` 时，自动改用其支持的 `max_tokens` 重试。
+模型 ID 请向服务商确认，不能填产品显示名称。选择能输出 JSON、上下文足够容纳整份试卷的文本模型。新接口默认输出上限32768 tokens，可设置1000–131072，须在服务商实际支持范围内；已有接口的自定义值保留。推理模型的思考token也可能消耗输出预算。截断报错会显示本次上限及接口提供的用量，失败教练卡片可点击“提高至…并重试”，只提高这家模型配置并重试该教练；也可在模型设置手动调整。程序对返回结构、六维范围、题目满分与输出截断进行校验。部分 OpenAI 兼容服务不支持 `max_completion_tokens` 时，自动改用其支持的 `max_tokens` 重试。
 
 每份答案通常调用“所选模型数 + 主模型汇总 + 主模型画像”次；范文不合规时每个模型至多追加1次修订；可选的 AI 试卷识别另外调用。画像的输入包含全部有效历史的压缩证据；记录很多时采用分块汇总。服务商按实际 token 计费，应用不包含 API 额度。每个模型的单次请求等待上限默认600秒，可在“模型设置 → 编辑 → 等待时限（秒）”设置60–1800秒；旧配置自动采用600秒，无需重填密钥。等待上限覆盖整次调用，OpenAI兼容参数重发也共用该时限。全局最多4个并发API请求。批改与画像是后台任务，关闭浏览器不影响执行。
 

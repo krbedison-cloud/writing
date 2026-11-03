@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import json
 import os
 import tempfile
@@ -363,6 +364,67 @@ class AppTests(unittest.TestCase):
         with patch('app.service.call_model',side_effect=invalid):b=self.submit(p)
         self.assertEqual(b['status'],'failed');self.assertIsNone(b['mean_score'])
         self.assertIn('评分证据：缺失必填字段',b['grades'][0]['error'])
+
+    def test_score_and_summary_are_readable_before_slow_reference_repair(self):
+        p=self.make_paper();release=threading.Event()
+        async def delayed(provider,task,data):
+            if task.startswith('独立批改'):
+                value=grade(16);value['high_score_answer']='甲\n'*20;return value
+            if task.startswith('范文校正'):
+                while not release.is_set():await asyncio.sleep(.01)
+                return {'high_score_answer':'　　'+'甲'*260}
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=delayed):
+            result=self.client.post('/api/attempts',json=dict(question_id=p['questions'][0]['id'],answer='测试原答案。',provider_ids=[self.master],master_id=self.master)).json()
+            try:
+                for _ in range(200):
+                    current=self.client.get('/api/attempts/'+result['attempt_id']).json()
+                    if current.get('synthesis'):break
+                    time.sleep(.01)
+                self.assertEqual(current['status'],'running')
+                self.assertIsNotNone(current['synthesis']);self.assertEqual(current['mean_score'],16)
+                g=current['grades'][0];self.assertEqual(g['status'],'completed');self.assertEqual(g['stage'],'reference_repair')
+                self.assertEqual(len(g['references']),1);self.assertEqual(g['result']['score'],16)
+                self.assertIn('request_started_at',g);self.assertIn('response_received_at',g)
+            finally:release.set()
+            self.wait_job(result['job_id'])
+            finished=self.client.get('/api/attempts/'+result['attempt_id']).json()
+            self.assertEqual(finished['status'],'completed');self.assertEqual(len(finished['grades'][0]['references']),2)
+            self.assertEqual(finished['grades'][0]['stage'],'completed')
+    def test_progress_distinguishes_semaphore_queue_from_api_wait(self):
+        p=self.make_paper();models=[self.master]+[self.add_model('coach-'+str(i))['id'] for i in range(4)]
+        release=threading.Event();started=[]
+        async def blocked(provider,task,data):
+            if task.startswith('独立批改'):
+                started.append(provider['id'])
+                while not release.is_set():await asyncio.sleep(.01)
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=blocked):
+            result=self.client.post('/api/attempts',json=dict(question_id=p['questions'][0]['id'],answer='测试排队状态。',provider_ids=models,master_id=self.master)).json()
+            try:
+                for _ in range(200):
+                    current=self.client.get('/api/attempts/'+result['attempt_id']).json()
+                    if len(current['grades'])==5:break
+                    time.sleep(.01)
+                self.assertEqual(len(started),4)
+                self.assertEqual(sum(g['stage']=='queued' for g in current['grades']),1)
+                self.assertEqual(sum(g['stage']=='requesting' for g in current['grades']),4)
+                queued=next(g for g in current['grades'] if g['stage']=='queued')
+                self.assertNotIn('request_started_at',queued)
+            finally:release.set()
+            self.wait_job(result['job_id'])
+            self.assertEqual(len(started),5)
+    def test_truncation_exposes_retry_budget_without_fake_score(self):
+        from app.llm import TruncatedOutputError
+        p=self.make_paper()
+        async def truncated(provider,task,data):
+            if task.startswith('独立批改'):raise TruncatedOutputError(6000,{'output_tokens':6000,'reasoning_tokens':5900})
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=truncated):a=self.submit(p)
+        g=a['grades'][0]
+        self.assertEqual(g['stage'],'failed');self.assertEqual(g['error_code'],'output_truncated')
+        self.assertEqual(g['token_limit'],6000);self.assertEqual(g['suggested_token_limit'],32768)
+        self.assertEqual(g['usage']['reasoning_tokens'],5900);self.assertIsNone(a['mean_score'])
 
     def test_all_fail_no_fake_zero_score(self):
         p=self.make_paper();bad=self.add_model('bad');a=self.submit(p,models=[bad['id']])

@@ -35,6 +35,9 @@ class MockModel(BaseHTTPRequestHandler):
             counts[model]=counts.get(model,0)+1
             if model=='coach-b' and counts[model]==1:
                 self.send_response(429);self.end_headers();self.wfile.write(b'mock rate limit');return
+            if model=='coach-truncated' and (body.get('max_completion_tokens') or body.get('max_tokens'))<32768:
+                self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
+                self.wfile.write(json.dumps({'choices':[{'finish_reason':'length','message':{'content':'partial'}}],'usage':{'completion_tokens':6000,'completion_tokens_details':{'reasoning_tokens':5900}}}).encode());return
             result=dict(score=payload['full_score']-(4 if model=='coach-a' else 6),dimensions={k:70 for k in DIMENSIONS},strengths=['观点清晰'],weaknesses=['材料要点尚有遗漏'],suggestions=['分类概括关键措施'],evidence=['原答案“加强建设”需要展开具体措施'],high_score_answer='这是模拟接口生成的参考答案，仅用于验证调用与存档流程，不是真实模型批改。',task_analysis=dict(task=payload['question']['prompt'],genre='按本题题干审题',requirements=[payload['question']['prompt']],material_basis=[payload['question']['materials'][:80]]))
         elif task.startswith(('范文校正','单独重写高分范文')):
             received_reference_contexts.append(payload['question'])
@@ -373,6 +376,10 @@ def main():
                 new=httpx.post(base+'/api/attempts',json=dict(question_id=expected['questions'][0]['id'],answer='加强创新，推动发展。',provider_ids=[p['id'] for p in providers]+[third['id']],master_id=providers[0]['id'])).json()
                 page.set_viewport_size({'width':1440,'height':1000});page.goto(base+'/#attempt/'+new['attempt_id'])
                 expect(page.locator('[data-action="review-tab"]')).to_have_count(2,timeout=10000)
+                slow=page.locator('.score-card').filter(has=page.get_by_text('coach-c',exact=True))
+                expect(slow).to_contain_text('批改请求中')
+                expect(slow.locator('[data-clock-start]')).to_contain_text('已等待')
+
                 # Hold an already-fetched poll response while the user selects the second coach.
                 page.evaluate("""()=>{const original=window.fetch;window.__holdPoll=true;window.fetch=async(...args)=>{const response=await original(...args);if(window.__holdPoll&&String(args[0]).startsWith('/api/attempts/')){window.__holdPoll=false;await new Promise(resolve=>window.__releasePoll=resolve);}return response;};}""")
                 page.wait_for_function('() => typeof window.__releasePoll === "function"',timeout=5000)
@@ -396,10 +403,26 @@ def main():
                     assert page.evaluate('document.documentElement.scrollWidth<=innerWidth'),width
                     assert page.locator('.reference-paper-target').evaluate('el=>el.scrollWidth<=el.clientWidth+1'),width
 
+                # A truncated legacy low-limit model can be raised and retried without regrading peers.
+                clipped=httpx.post(base+'/api/providers',json=dict(name='coach-truncated',protocol='openai',base_url=f'http://127.0.0.1:{mock.server_port}/v1',model='coach-truncated',api_key='mock-only',max_tokens=6000)).json()
+                job=httpx.post(base+'/api/attempts',json=dict(question_id=expected['questions'][0]['id'],answer='测试截断后重试。',provider_ids=[clipped['id']],master_id=providers[0]['id'])).json()
+                page.set_viewport_size({'width':1280,'height':900});page.goto(base+'/#attempt/'+job['attempt_id'])
+                boost=page.locator('[data-action="boost-retry"]');expect(boost).to_be_enabled(timeout=15000)
+                expect(page.locator('.score-card').filter(has=boost)).to_contain_text('6000')
+                before=counts['coach-a'];boost.click()
+                expect(page.locator('[data-action="boost-retry"]')).to_have_count(0,timeout=15000)
+                expect(page.locator('#review-body')).to_contain_text('模拟接口生成',timeout=15000)
+                expect(page.locator('[data-action="retry-coach"]')).to_have_count(0)
+                saved=next(p for p in httpx.get(base+'/api/providers').json() if p['id']==clipped['id'])
+                assert saved['max_tokens']==32768 and saved['has_key']
+                assert counts['coach-a']==before and counts['coach-truncated']==2
+                legacy=page.evaluate("()=>{const a=structuredClone(state.attempt);a.grades.forEach(g=>delete g.stage);return coachScoreCard(a,a.providers[0],false);}")
+                assert '已完成' in legacy and '未完成' not in legacy
+                page.screenshot(path='/tmp/shenlun-token-progress-tested.png',full_page=True)
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()
-            print('PASS: persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)

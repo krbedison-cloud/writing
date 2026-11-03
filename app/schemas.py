@@ -1,4 +1,5 @@
 from typing import Literal
+from .model_limits import DEFAULT_MAX_TOKENS, MAX_OUTPUT_TOKENS
 from .output_validation import number, text_list, dimensions
 from pydantic import BaseModel, Field, ConfigDict, model_validator, field_validator, AliasChoices
 
@@ -11,7 +12,7 @@ class ProviderInput(BaseModel):
     base_url: str = Field(min_length=8, max_length=500)
     model: str = Field(min_length=1, max_length=160, pattern=r"^[a-zA-Z0-9._:/@+\-]+$")
     api_key: str = Field(default="", max_length=2000)
-    max_tokens: int = Field(default=6000, ge=1000, le=32000)
+    max_tokens: int = Field(default=DEFAULT_MAX_TOKENS, ge=1000, le=MAX_OUTPUT_TOKENS)
     timeout_seconds: int = Field(default=600, ge=60, le=1800)
     @model_validator(mode="after")
     def validate_url(self):

@@ -122,3 +122,5 @@
 .paper-cell.paper-hanging { font-size: calc(var(--paper-font) * .58); letter-spacing: -.08em; }
 
 .paper-cell.paper-hanging-many { font-size: calc(var(--paper-font) * .4); }
+
+.score-card .btn { max-width: 100%; white-space: normal; }

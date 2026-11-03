@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from pydantic import ValidationError
 from .db import dumps
-from .llm import call_model, ModelError
+from .llm import call_model, ModelError, TruncatedOutputError
 from .materials import prepare_paper, model_question
 from .schemas import Grade, Synthesis, Portrait, PaperInput, ReferenceDraft, DIMENSIONS, KINDS
 from .paper import check_paper
@@ -50,6 +50,13 @@ class Service:
                 if row['status'] in ('queued', 'running'):
                     row['status'] = 'interrupted'
                     row['error'] = '服务重启中断了任务；已保留原答案与成功结果，可重试'
+                    if table=='attempts':
+                        for grade in row.get('grades',[]):
+                            if grade.get('status')=='running':
+                                grade.update(status='failed',stage='interrupted',error=row['error'],finished_at=now())
+                            elif grade.get('stage')=='reference_repair':
+                                grade.update(stage='completed',finished_at=now())
+                                if grade.get('references'):grade['references'][-1]['repair_error']=row['error']
                     self.db.put(table, row['id'], row, row.get('created_at'))
     def job(self, kind, target=None):
         j = dict(id=uid(), kind=kind, target_id=target, status='queued', stage='等待执行', created_at=now())
@@ -66,8 +73,9 @@ class Service:
         if not p:
             raise ModelError('所选模型配置已删除，请重新配置')
         return p
-    async def ask(self, provider, task, data):
+    async def ask(self, provider, task, data, on_start=None):
         async with self.semaphore:
+            if on_start:on_start()
             return await call_model(provider, task, data)
     async def classify(self, j, paper_id, provider_id):
         try:
@@ -140,67 +148,98 @@ class Service:
             self.finish(j,public_error(exc))
     async def grade(self, j, attempt_id, provider_ids=None):
         a = self.db.get('attempts', attempt_id)
-        a.update(status='running', error=None, grading_policy=GRADING_POLICY)
+        a.update(status='running', error=None, grading_policy=GRADING_POLICY, grading_stage='各教练批改中', summary_status='pending')
         self.db.put('attempts', a['id'], a, a['created_at'])
         self.stage(j, '各模型独立批改中')
         q = model_question(a['question_snapshot'])
         full = KINDS[q['kind']][1]
+        repair_tasks=[]
+        def save_grade(g):
+            a['grades']=[x for x in a['grades'] if x['provider_id']!=g['provider_id']]+[g]
+            self.db.put('attempts',a['id'],a,a['created_at'])
+        def progress(g,stage):
+            g.update(stage=stage,stage_started_at=now())
+            if stage=='requesting':g['request_started_at']=g['stage_started_at']
+            save_grade(g)
+        async def repair_for_grade(provider,g,reference):
+            try:
+                repaired=await self.repair_reference(provider,q,reference)
+                if repaired:g['references'].append(repaired)
+            except asyncio.CancelledError:
+                reference['repair_error']='服务中断了范文校正，初版已保留，可稍后单独重写范文'
+                raise
+            finally:
+                g['finished_at']=now();progress(g,'completed')
         async def one(pid):
             if any(g['provider_id'] == pid and g['status'] == 'completed' for g in a['grades']):
                 return
             snapshot = next(p for p in a['providers'] if p['id'] == pid)
-            g = dict(provider_id=pid, name=snapshot['name'], model=snapshot['model'], status='failed', grading_policy=GRADING_POLICY)
+            g = dict(provider_id=pid, name=snapshot['name'], model=snapshot['model'], status='running', grading_policy=GRADING_POLICY, queued_at=now())
+            progress(g,'queued')
             try:
                 p = self.provider(pid)
                 # Never silently substitute a different model into an existing attempt.
                 if (p['model'], p['base_url'], p['protocol']) != (snapshot['model'], snapshot['base_url'], snapshot['protocol']):
                     raise ModelError('模型配置已改变，请新建作答；不能将新模型混入旧批改')
-                raw = await self.ask(p, '独立批改。审题分析task_analysis中，task为本题任务，genre为本题所需文体（无固定文体则明确说明），requirements逐条摘录或忠实概述题干要求，material_basis引用本题材料并说明对应要点。返回单个JSON对象 {task_analysis:{task,genre,requirements,material_basis},score,dimensions,strengths,weaknesses,suggestions,evidence,high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。score 是本题训练满分内分数；dimensions 为六个指定维度各0–100。dimensions必须是六个指定中文名称为键、0–100数字为值的对象，不要嵌套说明；strengths、weaknesses、suggestions、evidence必须为字符串数组，前三项无内容可返回空数组，evidence须提供具体评分证据；high_score_answer必须为完整纯文本字符串；high_score_self_check 为前述自检对象；evidence 必须引用原答案并解释扣分。范文须自行逐字计数、自检文体格式与25格答题纸占用行数（paper_spec），同时满足两项上限。标题、称呼、落款、日期均计字，空格和换行损失占格；用实际全角空格表示缩进和对齐，范文纯文本，不要Markdown或字数说明。'+QUESTION_FIRST, {'full_score':full, 'dimensions':DIMENSIONS, 'rubric': TASK_RUBRIC, 'grading_policy': GRADING_POLICY, 'calibration':'优秀应满足题目核心要求且有充分材料或论证支撑；指出缺失与具体扣分理由，不因语言华丽忽略离题。自行拟定评分细则并保持一致；这不是官方阅卷。', 'question':q, 'answer':a['answer'], 'answer_layout':check_paper(a['answer'],q['paper_spec'])})
+                raw = await self.ask(p, '独立批改。审题分析与评语简明、去重，不复述大段材料；各列表通常2–4条，证据只摘必要短句，范文仍必须满足题干字数下限。审题分析task_analysis中，task为本题任务，genre为本题所需文体（无固定文体则明确说明），requirements逐条摘录或忠实概述题干要求，material_basis引用本题材料并说明对应要点。返回单个JSON对象 {task_analysis:{task,genre,requirements,material_basis},score,dimensions,strengths,weaknesses,suggestions,evidence,high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。score 是本题训练满分内分数；dimensions 为六个指定维度各0–100。dimensions必须是六个指定中文名称为键、0–100数字为值的对象，不要嵌套说明；strengths、weaknesses、suggestions、evidence必须为字符串数组，前三项无内容可返回空数组，evidence须提供具体评分证据；high_score_answer必须为完整纯文本字符串；high_score_self_check 为前述自检对象；evidence 必须引用原答案并解释扣分。范文须自行逐字计数、自检文体格式与25格答题纸占用行数（paper_spec），同时满足两项上限。标题、称呼、落款、日期均计字，空格和换行损失占格；用实际全角空格表示缩进和对齐，范文纯文本，不要Markdown或字数说明。'+QUESTION_FIRST, {'full_score':full, 'dimensions':DIMENSIONS, 'rubric': TASK_RUBRIC, 'grading_policy': GRADING_POLICY, 'calibration':'优秀应满足题目核心要求且有充分材料或论证支撑；指出缺失与具体扣分理由，不因语言华丽忽略离题。自行拟定评分细则并保持一致；这不是官方阅卷。', 'question':q, 'answer':a['answer'], 'answer_layout':check_paper(a['answer'],q['paper_spec'])}, on_start=lambda:progress(g,'requesting'))
+                g['response_received_at']=now()
+                if getattr(raw,'usage',None):g['usage']=raw.usage
+                progress(g,'validating')
                 result = Grade.model_validate(raw)
                 if result.score > full:
                     raise ModelError(f'模型分数超过本题 {full} 分满分，结果未计入均分')
                 g.update(status='completed', result=result.model_dump())
                 original_reference = self.reference(g['result'],q,id='original')
                 g['references'] = [original_reference]
-                repaired = await self.repair_reference(p,q,original_reference)
-                if repaired:
-                    g['references'].append(repaired)
+                g['grading_completed_at']=now();g['finished_at']=g['grading_completed_at']
+                progress(g,'completed')
+                if not original_reference['layout_check']['valid']:
+                    g.pop('finished_at',None);progress(g,'reference_repair')
+                    repair_tasks.append(asyncio.create_task(repair_for_grade(p,g,original_reference)))
             except Exception as exc:
-                g['error'] = public_error(exc)
-            a['grades'] = [x for x in a['grades'] if x['provider_id'] != pid] + [g]
-            self.db.put('attempts', a['id'], a, a['created_at'])
+                g.update(status='failed',error=public_error(exc),finished_at=now())
+                if isinstance(exc,TruncatedOutputError):
+                    g.update(error_code='output_truncated',token_limit=exc.token_limit,suggested_token_limit=exc.suggested_token_limit,usage=exc.usage)
+                progress(g,'failed')
         try:
-            targets = provider_ids if provider_ids is not None else [p['id'] for p in a['providers']]
+            targets=provider_ids if provider_ids is not None else [p['id'] for p in a['providers']]
             await asyncio.gather(*(one(pid) for pid in targets))
-            good = [g for g in a['grades'] if g['status'] == 'completed']
-            a['mean_score'] = round(statistics.mean(g['result']['score'] for g in good), 2) if good else None
-            a['score_spread'] = round(max(g['result']['score'] for g in good) - min(g['result']['score'] for g in good), 2) if good else None
-            self.db.put('attempts', a['id'], a, a['created_at'])
-            if not good:
-                a.update(status='failed', error='所有批改模型均失败；原答案已存档，可重试')
-            else:
-                self.stage(j, '主模型汇总诊断')
+            good=[g for g in a['grades'] if g['status']=='completed']
+            a['mean_score']=round(statistics.mean(g['result']['score'] for g in good),2) if good else None
+            a['score_spread']=round(max(g['result']['score'] for g in good)-min(g['result']['score'] for g in good),2) if good else None
+            self.db.put('attempts',a['id'],a,a['created_at'])
+            async def summarize():
+                self.stage(j,'主模型汇总中，范文校正并行执行')
+                a.update(summary_status='running',grading_stage='主模型汇总中，已返回的评分可先阅读')
+                self.db.put('attempts',a['id'],a,a['created_at'])
                 try:
-                    master = self.provider(a['master']['id'])
-                    if (master['model'], master['base_url'], master['protocol']) != (a['master']['model'], a['master']['base_url'], a['master']['protocol']):
+                    master=self.provider(a['master']['id'])
+                    if any(master[k]!=a['master'][k] for k in ('model','base_url','protocol')):
                         raise ModelError('主模型配置已改变，请恢复原配置或重新提交')
                     raw = await self.ask(master, '汇总多位教练的批改，先以本题题干、材料和用户原答核验每位教练的审题与扣分依据；若有文体误判、强加格式或引用无关材料，须明确指出并排除其诊断影响，不把错误当共识。返回 {analysis,consensus,disagreements,action_plan}。analysis为详细诊断文字，其余为字符串数组。识别共识和分歧，检验批评是否有原文证据，不盲信多数。均分已由程序计算，不改分。优先给出下一次能执行的修改动作。', {'question':q,'answer':a['answer'],'answer_layout':check_paper(a['answer'],q['paper_spec']),'mean_score':a['mean_score'],'successful_count':len(good),'requested_count':len(a['providers']),'reviews':[{k:g[k] for k in ('provider_id','name','model','status')} | {'result':{k:v for k,v in g['result'].items() if k not in ('high_score_answer','high_score_self_check')}} for g in good]})
-                    a['synthesis'] = Synthesis.model_validate(raw).model_dump()
-                    a['status'] = 'completed' if len(good) == len(a['providers']) else 'partial'
+                    a['synthesis']=Synthesis.model_validate(raw).model_dump();a['summary_status']='completed'
                 except Exception as exc:
-                    a.update(status='summary_failed', error=public_error(exc))
-            a['finished_at'] = now()
-            a.pop('retry_provider_ids',None)
-            self.db.put('attempts', a['id'], a, a['created_at'])
-            self.finish(j, a.get('error'))
+                    a.update(summary_status='failed',error=public_error(exc))
+                if any(not task.done() for task in repair_tasks):
+                    a['grading_stage']='评分与汇总已返回，正在完成范文校正'
+                    self.stage(j,a['grading_stage'])
+                self.db.put('attempts',a['id'],a,a['created_at'])
             if good:
-                profile_job = self.job('profile')
-                self.launch(self.portrait(profile_job, a['master']['id']))
+                await asyncio.gather(summarize(),*repair_tasks)
+                a['status']='summary_failed' if a['summary_status']=='failed' else 'completed' if len(good)==len(a['providers']) else 'partial'
+            else:
+                a.update(status='failed',error='所有批改模型均失败；原答案已存档，可重试')
+            a['finished_at']=now();a['grading_stage']='批改完成';a.pop('retry_provider_ids',None)
+            self.db.put('attempts',a['id'],a,a['created_at']);self.finish(j,a.get('error'))
+            if good:
+                profile_job=self.job('profile');self.launch(self.portrait(profile_job,a['master']['id']))
         except Exception as exc:
-            a.update(status='failed', error=public_error(exc))
-            a.pop('retry_provider_ids',None)
-            self.db.put('attempts', a['id'], a, a['created_at'])
-            self.finish(j, a['error'])
+            a.update(status='failed',error=public_error(exc));a.pop('retry_provider_ids',None)
+            self.db.put('attempts',a['id'],a,a['created_at']);self.finish(j,a['error'])
+        finally:
+            for task in repair_tasks:
+                if not task.done():task.cancel()
+            if repair_tasks:await asyncio.gather(*repair_tasks,return_exceptions=True)
     def stats(self):
         attempts = self.db.all('attempts')
         valid = [a for a in attempts if a.get('mean_score') is not None]
