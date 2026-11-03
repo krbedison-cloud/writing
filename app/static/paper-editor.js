@@ -28,14 +28,16 @@
    this.input.addEventListener('compositionstart',()=>{this.composing=true;},options);
    this.input.addEventListener('compositionend',()=>{this.composing=false;this.render(true);},options);
    this.input.addEventListener('keydown',event=>this.key(event),options);
-   this.grid.addEventListener('pointerdown',event=>this.pointerDown(event),options);
+   this.surface.addEventListener('pointerdown',event=>{if(this.root.dataset.mode==='grid')this.pointerDown(event);},options);
    this.grid.addEventListener('pointermove',event=>this.pointerMove(event),options);
    this.grid.addEventListener('pointerup',()=>{this.drag=null;},options);
    this.grid.addEventListener('pointercancel',()=>{this.drag=null;},options);
+   this.grid.addEventListener('lostpointercapture',()=>{this.drag=null;},options);
    document.addEventListener('selectionchange',()=>{if(document.activeElement===this.input)this.selection();},options);
    this.input.addEventListener('focus',()=>this.selection(),options);this.input.addEventListener('blur',()=>this.selection(),options);
    this.root.querySelectorAll('[data-paper-format]').forEach(button=>button.addEventListener('click',()=>this.format(button.dataset.paperFormat),options));
    this.root.querySelector('[data-paper-mode]').addEventListener('click',()=>this.toggleMode(),options);
+   this.root.querySelector('[data-paper-select-overflow]').addEventListener('click',()=>this.selectOverflow(),options);
    const indent=this.root.querySelector('#paper-indent');
    try{indent.checked=localStorage.getItem('paper-auto-indent')!=='0';}catch{}
    indent.addEventListener('change',()=>{try{localStorage.setItem('paper-auto-indent',indent.checked?'1':'0')}catch{}},options);
@@ -54,6 +56,7 @@
     if(node.textContent!==value)node.textContent=value;
     node.classList.toggle('paper-overflow',index>=this.spec.cells);
    });
+   this.root.querySelector('[data-paper-select-overflow]').hidden=this.layout.overflow_start===null;
    this.onChange?.(PaperLayout.check(this.input.value,this.spec));
    this.fit();
    this.selection(scroll);
@@ -92,9 +95,11 @@
    let index=cursor.row*this.spec.columns+cursor.col;
    const after=index>=this.cellNodes.length;index=Math.min(index,this.cellNodes.length-1);
    const active=document.activeElement===this.input;
+   const from=this.layout.carets[start],to=this.layout.carets[end];
+   const fromCell=from?from.row*this.spec.columns+from.col:0,toCell=to?to.row*this.spec.columns+to.col:0;
    this.cellNodes.forEach((node,i)=>{
     const slot=this.layout.slots[i];
-    node.classList.toggle('paper-selected',!!slot&&start!==end&&slot.start<end&&slot.end>start);
+    node.classList.toggle('paper-selected',start!==end&&((i>=fromCell&&i<toCell)||(!!slot&&slot.start<end&&slot.end>start)));
     node.classList.toggle('paper-caret',active&&start===end&&i===index);
     node.classList.toggle('paper-caret-end',after&&i===index);
    });
@@ -109,19 +114,44 @@
    const slot=this.layout.slots[index];if(slot)return after?slot.end:slot.start;
    const row=Math.floor(index/this.spec.columns),col=index%this.spec.columns;
    let best=this.input.value.length,distance=Infinity;
-   this.layout.carets.forEach((point,i)=>{const d=Math.abs(point.row-row)*this.spec.columns+Math.abs(point.col-col);if(d<distance){best=i;distance=d;}});
+   this.layout.carets.forEach((point,i)=>{
+    const code=this.input.value.charCodeAt(i),previous=this.input.value.charCodeAt(i-1);
+    if(code>=0xdc00&&code<=0xdfff&&previous>=0xd800&&previous<=0xdbff)return;
+    const d=Math.abs(point.row-row)*this.spec.columns+Math.abs(point.col-col);
+    if(d<distance||(d===distance&&i>best)){best=i;distance=d;}
+   });
    return best;
+  }
+  hitCell(x,y){
+   // The native input follows the caret; ignore its two-pixel overlay while dragging.
+   const hit=document.elementsFromPoint(x,y).find(node=>node.classList.contains('paper-cell')&&this.grid.contains(node));
+   if(hit)return hit;
+   let nearest,distance=Infinity;
+   for(const row of this.grid.children){
+    const rect=row.getBoundingClientRect(),dx=Math.max(rect.left-x,0,x-rect.right),dy=Math.max(rect.top-y,0,y-rect.bottom);
+    const d=dx*dx+dy*dy;if(d<distance){nearest=row;distance=d;}
+   }
+   if(!nearest)return null;
+   const first=nearest.children[1].getBoundingClientRect();
+   const col=Math.max(0,Math.min(this.spec.columns-1,Math.floor((x-first.left)/first.width)));
+   return nearest.children[col+1];
   }
   range(anchor,end){this.input.focus({preventScroll:true});this.input.setSelectionRange(Math.min(anchor,end),Math.max(anchor,end),end<anchor?'backward':'forward');this.selection();}
   pointerDown(event){
-   const cell=event.target.closest('.paper-cell');if(!cell||event.button!==0)return;
+   const cell=this.hitCell(event.clientX,event.clientY);if(!cell||event.button!==0)return;
    event.preventDefault();const rect=cell.getBoundingClientRect();const index=this.atCell(Number(cell.dataset.cell),event.clientX>rect.left+rect.width/2);
-   this.drag=index;this.grid.setPointerCapture(event.pointerId);this.range(index,index);
+   const anchor=event.shiftKey?(this.input.selectionDirection==='backward'?this.input.selectionEnd:this.input.selectionStart):index;
+   this.drag=anchor;this.grid.setPointerCapture(event.pointerId);this.range(anchor,index);
   }
   pointerMove(event){
    if(this.drag===null)return;
-   const cell=document.elementFromPoint(event.clientX,event.clientY)?.closest('.paper-cell');if(!cell||!this.grid.contains(cell))return;
+   const cell=this.hitCell(event.clientX,event.clientY);if(!cell)return;
    const rect=cell.getBoundingClientRect();this.range(this.drag,this.atCell(Number(cell.dataset.cell),event.clientX>rect.left+rect.width/2));
+  }
+  selectOverflow(){
+   const start=this.layout.overflow_start;if(start===null)return;
+   this.range(start,this.input.value.length);
+   this.toast?.('已选中超出纸面的内容，按 Backspace 删除；可撤销恢复');
   }
   insert(text,start=this.input.selectionStart,end=this.input.selectionEnd){
    this.input.focus({preventScroll:true});this.input.setSelectionRange(start,end);

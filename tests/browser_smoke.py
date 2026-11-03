@@ -186,6 +186,44 @@ def main():
                         page.locator('#answer').fill('甲\n'*15)
                         expect(page.locator('#paper-warning')).to_contain_text('纸面超限')
                         assert page.locator('.paper-overflow').count()>0
+                        # A long plain-text draft must remain selectable as a single range in grid mode.
+                        capacity=expected['questions'][0]['paper_spec']['cells']
+                        kept='甲'*capacity;overlong=kept+'乙'*75
+                        page.locator('[data-paper-mode]').click()
+                        expect(page.locator('#paper-editor')).to_have_attribute('data-mode','plain')
+                        page.locator('#answer').fill(overlong)
+                        page.locator('[data-paper-mode]').click()
+                        expect(page.locator('#paper-editor')).to_have_attribute('data-mode','grid')
+                        first=page.locator(f'.paper-cell[data-cell="{capacity}"]').bounding_box()
+                        last=page.locator(f'.paper-cell[data-cell="{len(overlong)-1}"]').bounding_box()
+                        # Start again on the caret's native-input overlay, not only on an uncovered cell.
+                        page.mouse.click(first['x']+1,first['y']+first['height']/2)
+                        page.mouse.move(first['x']+1,first['y']+first['height']/2);page.mouse.down()
+                        page.mouse.move(last['x']+last['width']+5,last['y']+last['height']/2,steps=20);page.mouse.up()
+                        selected=page.locator('#answer').evaluate('el=>[el.selectionStart,el.selectionEnd]')
+                        assert selected==[capacity,len(overlong)],selected
+                        page.keyboard.press('Backspace');expect(page.locator('#answer')).to_have_value(kept)
+                        page.locator('#answer').press('Control+z');expect(page.locator('#answer')).to_have_value(overlong)
+                        # One action selects the entire overflow, including Unicode and empty-line format loss.
+                        for text,prefix in [(overlong,kept),('😀'*capacity+'尾😀','😀'*capacity),(kept+'\n\n',kept+'\n'),('甲\n'*(capacity//25+1),'甲\n'*(capacity//25))]:
+                            page.locator('[data-paper-mode]').click();page.locator('#answer').fill(text);page.locator('[data-paper-mode]').click()
+                            page.locator('[data-paper-select-overflow]').click()
+                            assert page.locator('#answer').evaluate('el=>el.value.slice(el.selectionStart,el.selectionEnd)')==text[len(prefix):]
+                            assert page.locator('.paper-selected').count()>0
+                            page.keyboard.press('Backspace');expect(page.locator('#answer')).to_have_value(prefix)
+                            expect(page.locator('[data-paper-select-overflow]')).not_to_be_visible()
+                            expect(page.locator('#paper-warning')).not_to_be_visible()
+                            page.locator('#answer').press('Control+z');expect(page.locator('#answer')).to_have_value(text)
+                        # Shift-click can select across the entire overflow; selecting all still uses the native editor.
+                        page.locator('#answer').fill(overlong)
+                        page.locator(f'.paper-cell[data-cell="{capacity}"]').click(position={'x':1,'y':2})
+                        assert page.locator('#answer').evaluate('el=>[el.selectionStart,el.selectionEnd]')==[capacity,capacity]
+                        cell=page.locator(f'.paper-cell[data-cell="{len(overlong)-1}"]');bounds=cell.bounding_box()
+                        cell.click(position={'x':bounds['width']-1,'y':2},modifiers=['Shift'])
+                        selected=page.locator('#answer').evaluate('el=>[el.selectionStart,el.selectionEnd]')
+                        assert selected==[capacity,len(overlong)],selected
+                        page.keyboard.press('Backspace');expect(page.locator('#answer')).to_have_value(kept)
+                        page.locator('#answer').press('Control+a');page.keyboard.press('Backspace');expect(page.locator('#answer')).to_have_value('')
                     # Every row and all 25 columns fit beside the materials, including the 48-row essay.
                     for width,height in [(1280,800),(1440,900),(1920,1080)]:
                         page.set_viewport_size({'width':width,'height':height})
@@ -294,7 +332,7 @@ def main():
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()
-            print('PASS: reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)

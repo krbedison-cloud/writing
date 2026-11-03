@@ -53,5 +53,22 @@ class PaperTests(unittest.TestCase):
     def test_bad_model_self_count_does_not_discard_valid_grade(self):
         raw=dict(score=15,dimensions={k:70 for k in ['审题立意','要点提炼','材料运用','结构逻辑','语言表达','文体规范']},strengths=['优点'],weaknesses=['不足'],suggestions=['建议'],evidence=['依据'],high_score_answer='参考范文包含具体材料依据和规范表达。',high_score_self_check={'word_count':'不知道'})
         self.assertIsNone(Grade.model_validate(raw).high_score_self_check)
+    def test_overflow_selection_preserves_fitting_prefix_and_unicode(self):
+        spec=paper_spec({'word_max':350})
+        cases=[('甲'*350+'超出',350,'甲'*350),
+               ('甲'*349+'\t尾',349,'甲'*349),
+               ('甲'*350+'\n\n',351,'甲'*350+'\n'),
+               ('\n'*15,14,'\n'*14),
+               ('😀'*350+'尾',700,'😀'*350),
+               ('甲'*349+'😀\u0301尾',352,'甲'*349+'😀\u0301'),
+               ('甲'*350+'\u200b尾',351,'甲'*350+'\u200b'),
+               ('甲'*350,None,'甲'*350)]
+        module=str(Path(__file__).resolve().parents[1]/'app/static/paper-layout.js')
+        script="const lib=require(process.argv[1]);let s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{const d=JSON.parse(s);process.stdout.write(JSON.stringify(d.cases.map(([text])=>{const a=lib.analyze(text,d.spec);return [a.overflow_start,a.overflow_start===null?text:text.slice(0,a.overflow_start)];})))});"
+        result=subprocess.run(['node','-e',script,module],input=json.dumps({'cases':cases,'spec':spec}),capture_output=True,text=True,check=True)
+        self.assertEqual(json.loads(result.stdout),[[start,prefix] for text,start,prefix in cases])
+        for text,start,prefix in cases:
+            self.assertLessEqual(check_paper(prefix,spec)['occupied_cells'],spec['cells'])
+            self.assertEqual(check_paper(text,spec)['overflow_cells']>0,start is not None)
 
 if __name__=='__main__':unittest.main()

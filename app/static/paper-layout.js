@@ -10,7 +10,7 @@
  }
  function analyze(value,spec){
   const text=String(value).replace(/\r\n?/g,'\n');
-  let row=0,col=0,words=0,written=0,spaces=0,loss=0,index=0;
+  let row=0,col=0,words=0,written=0,spaces=0,loss=0,index=0,overflowStart=null;
   const slots=[],carets=[];
   const coordinate=()=>({row:row+(col===spec.columns?1:0),col:col===spec.columns?0:col});
   carets[0]=coordinate();
@@ -29,15 +29,16 @@
     }
     written+=width;if(whitespace.test(char))spaces+=width;else words++;
    }
+   if(overflowStart===null&&written+loss>spec.cells)overflowStart=start;
    carets[index]=coordinate();
   }
   const occupied=written+loss,usedRows=occupied?Math.ceil(occupied/spec.columns):0,reasons=[];
   if(spec.word_min&&words<spec.word_min)reasons.push(`字数不足：${words} / 至少 ${spec.word_min} 字`);
   if(spec.word_max&&words>spec.word_max)reasons.push(`字数超限：${words} / 最多 ${spec.word_max} 字`);
   if(usedRows>spec.rows)reasons.push(`纸面超限：占用 ${usedRows} / ${spec.rows} 行（含缩进和换行损失）`);
-  return {text,slots,carets,word_count:words,occupied_cells:occupied,used_rows:usedRows,whitespace_cells:spaces,line_break_loss:loss,formatting_cells:spaces+loss,remaining_cells:spec.cells-occupied,overflow_cells:Math.max(0,occupied-spec.cells),valid:reasons.length===0,reasons};
+  return {text,slots,carets,overflow_start:overflowStart,word_count:words,occupied_cells:occupied,used_rows:usedRows,whitespace_cells:spaces,line_break_loss:loss,formatting_cells:spaces+loss,remaining_cells:spec.cells-occupied,overflow_cells:Math.max(0,occupied-spec.cells),valid:reasons.length===0,reasons};
  }
- function publicCheck(value,spec){const r=analyze(value,spec);return Object.fromEntries(Object.entries(r).filter(([k])=>!['text','slots','carets'].includes(k)));}
+ function publicCheck(value,spec){const r=analyze(value,spec);return Object.fromEntries(Object.entries(r).filter(([k])=>!['text','slots','carets','overflow_start'].includes(k)));}
  const tools={analyze,check:publicCheck,specFor};
  root.PaperLayout=tools;if(typeof module!=='undefined'&&module.exports)module.exports=tools;
 })(typeof window==='undefined'?globalThis:window);
