@@ -54,7 +54,8 @@ def validation_message(error):
             reason='需为范围内的有限数字'
         elif kind in ('list_type','string_type'):reason='需为文字列表' if kind=='list_type' else '需为纯文字'
         elif kind in ('too_short','string_too_short'):reason='内容为空或过短'
-        elif kind in ('too_long','string_too_long'):reason='内容过长'
+        elif kind=='too_long':reason='列表条数超过上限'
+        elif kind=='string_too_long':reason='文字长度超过上限'
         else:reason='字段格式不符合要求'
         message=label+'：'+reason
         if message not in messages:messages.append(message)

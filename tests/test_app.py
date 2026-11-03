@@ -452,18 +452,53 @@ class AppTests(unittest.TestCase):
         p=self.make_paper();j=self.client.post('/api/papers/'+p['id']+'/classify',json={'provider_id':self.master}).json();self.assertEqual(self.wait_job(j['id'])['status'],'completed')
         new=self.client.get('/api/papers/'+p['id']).json();self.assertFalse(new['confirmed']);self.assertEqual(len(new['questions']),3)
         self.assertEqual(new['questions'][0]['id'],p['questions'][0]['id'])
+    def test_summary_only_retry_preserves_coach_grades(self):
+        summary_calls=0
+        async def summarize(p,task,payload):
+            nonlocal summary_calls
+            if task.startswith('汇总'):
+                summary_calls+=1
+                return dict(analysis='依据题干核对原答，下一次应补充材料中的具体举措。',consensus=[],disagreements=[],action_plan=['具体修改建议']*(65 if summary_calls==1 else 12))
+            return await fake_model(p,task,payload)
+        self.mock.side_effect=summarize
+        p=self.make_paper();a=self.submit(p)
+        self.assertEqual(a['status'],'summary_failed')
+        grades=a['grades']
+        count=sum(c.args[1].startswith('独立批改') for c in self.mock.call_args_list)
+        j=self.client.post('/api/attempts/'+a['id']+'/retry').json();self.wait_job(j['job_id'])
+        updated=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(updated['status'],'completed')
+        self.assertEqual(updated['grades'],grades)
+        self.assertEqual(updated['mean_score'],a['mean_score'])
+        self.assertEqual(len(updated['synthesis']['action_plan']),12)
+        self.assertEqual(sum(c.args[1].startswith('独立批改') for c in self.mock.call_args_list),count)
+
+    def test_existing_profile_is_brief_without_rewriting_saved_data(self):
+        result=dict(analysis='这是长期观察。'*100,strengths=['优势'+str(i) for i in range(8)],weaknesses=['短板'+str(i) for i in range(8)],action_plan=['训练'+str(i) for i in range(8)])
+        db=self.app.state.service.db
+        db.setting('portrait',dict(result=result,signature='old',name='教练',model='good',history_count=1,updated_at='2026-01-01'))
+        brief=self.client.get('/api/profile').json()['portrait']['result']
+        self.assertLessEqual(len(brief['analysis']),120)
+        self.assertEqual(len(brief['strengths']),2)
+        self.assertEqual(len(brief['weaknesses']),2)
+        self.assertEqual(len(brief['action_plan']),3)
+        self.assertEqual(db.setting('portrait')['result'],result)
+
     def test_profile_all_history(self):
         p=self.make_paper();self.submit(p);self.submit(p,1)
         for j in self.client.get('/api/jobs').json():
             if j['kind']=='profile':self.wait_job(j['id'])
         s=self.client.get('/api/profile').json();self.assertEqual(s['portrait']['history_count'],2)
         calls=[c for c in self.mock.call_args_list if c.args[1].startswith('基于全部')]
-        self.assertEqual(len(calls[-1].args[2]['all_history']),2)
+        rows=calls[-1].args[2]['all_history']
+        self.assertEqual(len(rows),2)
+        self.assertTrue(all('reviews' not in row and 'weaknesses' in row for row in rows))
+        self.assertNotIn('原答案',json.dumps(rows,ensure_ascii=False))
     def test_large_history_is_batched_without_dropping_records(self):
         p=self.make_paper();a=self.submit(p)
         for j in self.client.get('/api/jobs').json():
             if j['kind']=='profile':self.wait_job(j['id'])
-        for index in range(100):
+        for index in range(400):
             copied=json.loads(json.dumps(a));copied['id']='history-'+str(index)
             for g in copied['grades']:
                 g['result']['weaknesses']=['不足分析'*40]
@@ -473,8 +508,8 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.wait_job(job['id'])['status'],'completed')
         calls=[c for c in self.mock.call_args_list if c.args[1].startswith('历史分块')]
         self.assertTrue(calls)
-        self.assertEqual(sum(len(c.args[2]['records']) for c in calls),101)
-        s=self.client.get('/api/profile').json();self.assertEqual(s['portrait']['history_count'],101)
+        self.assertEqual(sum(len(c.args[2]['records']) for c in calls),401)
+        s=self.client.get('/api/profile').json();self.assertEqual(s['portrait']['history_count'],401)
     def test_restart_persistence_and_recovery(self):
         p=self.make_paper();a=self.submit(p)
         other=create_app(self.tmp.name)

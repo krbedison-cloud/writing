@@ -11,6 +11,7 @@ from .llm import call_model, ModelError, TruncatedOutputError
 from .materials import prepare_paper, model_question
 from .schemas import Grade, Synthesis, Portrait, PaperInput, ReferenceDraft, DIMENSIONS, KINDS
 from .paper import check_paper
+from .portrait_summary import BRIEF_POLICY, brief_portrait, brief_points
 from .output_validation import validation_message
 from .import_validation import FORMAT, normalize_import, import_errors
 
@@ -234,7 +235,7 @@ class Service:
                     master=self.provider(a['master']['id'])
                     if any(master[k]!=a['master'][k] for k in ('model','base_url','protocol')):
                         raise ModelError('主模型配置已改变，请恢复原配置或重新提交')
-                    raw = await self.ask(master, '汇总多位教练的批改，先以本题题干、材料和用户原答核验每位教练的审题与扣分依据；若有文体误判、强加格式或引用无关材料，须明确指出并排除其诊断影响，不把错误当共识。返回 {analysis,consensus,disagreements,action_plan}。analysis为详细诊断文字，其余为字符串数组。识别共识和分歧，检验批评是否有原文证据，不盲信多数。均分已由程序计算，不改分。优先给出下一次能执行的修改动作。', {'question':q,'answer':a['answer'],'answer_layout':check_paper(a['answer'],q['paper_spec']),'mean_score':a['mean_score'],'successful_count':len(good),'requested_count':len(a['providers']),'reviews':[{k:g[k] for k in ('provider_id','name','model','status')} | {'result':{k:v for k,v in g['result'].items() if k not in ('high_score_answer','high_score_self_check')}} for g in good]})
+                    raw = await self.ask(master, '汇总多位教练的批改，先以本题题干、材料和用户原答核验每位教练的审题与扣分依据；若有文体误判、强加格式或引用无关材料，须明确指出并排除其诊断影响，不把错误当共识。返回 {analysis,consensus,disagreements,action_plan}。analysis用300–600字给出关键诊断，其余为字符串数组。consensus和disagreements各最多5条，action_plan最多5条，每条只给一个具体动作，优先级从高到低，避免重复。识别共识和分歧，检验批评是否有原文证据，不盲信多数。均分已由程序计算，不改分。优先给出下一次能执行的修改动作。', {'question':q,'answer':a['answer'],'answer_layout':check_paper(a['answer'],q['paper_spec']),'mean_score':a['mean_score'],'successful_count':len(good),'requested_count':len(a['providers']),'reviews':[{k:g[k] for k in ('provider_id','name','model','status')} | {'result':{k:v for k,v in g['result'].items() if k not in ('high_score_answer','high_score_self_check')}} for g in good]})
                     a['synthesis']=Synthesis.model_validate(raw).model_dump();a['summary_status']='completed'
                 except Exception as exc:
                     a.update(summary_status='failed',error=public_error(exc))
@@ -279,6 +280,8 @@ class Service:
         timeline = [{'id':a['id'],'date':a['created_at'], 'score':round(a['mean_score']/KINDS[a['question_snapshot']['kind']][1]*100, 1),'kind':a['question_snapshot']['kind']} for a in reversed(valid)]
         signature = hashlib.sha256(dumps([(a['id'], a['mean_score'], a.get('finished_at')) for a in valid]).encode()).hexdigest()
         portrait = self.db.setting('portrait')
+        if portrait:
+            portrait = dict(portrait, result=brief_portrait(portrait['result']))
         return dict(total_attempts=len(attempts), graded_count=len(valid), paper_count=len(self.db.all('papers')), dimensions=dims, forecast=forecast, estimated_total=total, xp=xp, level=xp//100+1, level_progress=xp%100, timeline=timeline, signature=signature, portrait=portrait, portrait_stale=bool(portrait and portrait.get('signature') != signature), note='预估取各题型最近5次有效批改均分相加；六维分取全部有效作答的模型维度均分。重复练习、题目难度与模型偏差均会影响结果，不是官方成绩或排名。缺任一题型时不输出总分。')
     async def portrait(self, j, provider_id):
         async with self.profile_lock:
@@ -293,7 +296,12 @@ class Service:
                     if a.get('mean_score') is None:
                         continue
                     good = [g for g in a['grades'] if g['status'] == 'completed']
-                    history.append({'id':a['id'], 'date':a['created_at'], 'kind':a['question_snapshot']['kind'], 'score':a['mean_score'], 'full_score':KINDS[a['question_snapshot']['kind']][1], 'dimensions':{k:round(statistics.mean(g['result']['dimensions'][k] for g in good),1) for k in DIMENSIONS}, 'reviews':[{'name':g['name'],'model':g['model'],'score':g['result']['score'],'weaknesses':g['result']['weaknesses'][0][:180],'evidence':g['result']['evidence'][0][:200]} for g in good]})
+                    history.append({'id':a['id'], 'date':a['created_at'], 'kind':a['question_snapshot']['kind'],
+                                    'score':a['mean_score'], 'full_score':KINDS[a['question_snapshot']['kind']][1],
+                                    'dimensions':{k:round(statistics.mean(g['result']['dimensions'][k] for g in good),1) for k in DIMENSIONS},
+                                    'score_spread':a.get('score_spread'),
+                                    'strengths':brief_points([t for g in good for t in g['result']['strengths']],2,80),
+                                    'weaknesses':brief_points([t for g in good for t in g['result']['weaknesses']],3,80)})
                 provider = self.provider(provider_id)
                 evidence = history
                 compressed = False
@@ -312,14 +320,14 @@ class Service:
                     reduced = []
                     for index, batch in enumerate(batches):
                         self.stage(j, f'历史较多，正在分析第 {index+1}/{len(batches)} 组证据')
-                        part = await self.ask(provider, '历史分块分析：返回 {analysis,strengths,weaknesses,action_plan}，analysis为文字其余为字符串数组。保留本组记录的时间跨度、变化、共性不足、反例与不确定性；不能把本组说成全部历史。不虚构分数。控制文字总长在3000字内以便汇总。', {'records':batch})
-                        summary = Portrait.model_validate(part).model_dump()
+                        part = await self.ask(provider, '历史分块分析：'+BRIEF_POLICY+'返回 {analysis,strengths,weaknesses,action_plan}，analysis为文字其余为字符串数组。保留本组记录的时间跨度、变化、共性不足、反例与不确定性；不能把本组说成全部历史。不虚构分数。只保留本组最重要的变化和训练重点。', {'records':batch})
+                        summary = brief_portrait(Portrait.model_validate(part).model_dump())
                         reduced.append({'record_count':sum(row.get('record_count',1) for row in batch),'summary':summary})
                     if len(dumps(reduced)) >= len(dumps(evidence)):
                         raise ModelError('历史分块摘要过长，无法继续压缩；数值统计已更新，请换用能遵循长度要求的主模型')
                     evidence, compressed = reduced, True
-                raw = await self.ask(provider, '基于全部历史证据生成六维能力诊断，返回 {analysis,strengths,weaknesses,action_plan}。analysis 为文字，其余为字符串数组。解释进步与反复问题、缺失题型、样本偏差和跨模型差异，给出下一轮训练建议。不重算程序统计、不虚构排名、上岸概率或确定的考试分数。所有历史均含在记录中，单条为压缩摘要，不代表已阅读未提供的完整答案。', {'statistics':{k:v for k,v in stats.items() if k not in ('portrait','timeline')}, 'all_history':evidence, 'history_is_compressed':compressed, 'record_count':len(history)})
-                result = Portrait.model_validate(raw).model_dump()
+                raw = await self.ask(provider, '基于全部历史证据生成简短能力观察，'+BRIEF_POLICY+'返回 {analysis,strengths,weaknesses,action_plan}。analysis 为文字，其余为字符串数组。解释进步与反复问题、缺失题型、样本偏差和跨模型差异，给出下一轮训练建议。不重算程序统计、不虚构排名、上岸概率或确定的考试分数。所有历史均含在记录中，单条为压缩摘要，不代表已阅读未提供的完整答案。', {'statistics':{k:v for k,v in stats.items() if k not in ('portrait','timeline')}, 'all_history':evidence, 'history_is_compressed':compressed, 'record_count':len(history)})
+                result = brief_portrait(Portrait.model_validate(raw).model_dump())
                 self.db.setting('portrait', dict(result=result, signature=stats['signature'], model=provider['model'], name=provider['name'], updated_at=now(), history_count=len(history)))
                 self.finish(j)
             except Exception as exc:

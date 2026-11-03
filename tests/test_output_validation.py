@@ -1,6 +1,7 @@
 import unittest
 from pydantic import ValidationError
-from app.schemas import Grade,Synthesis,DIMENSIONS
+from app.schemas import Grade,Synthesis,Portrait,DIMENSIONS
+from app.portrait_summary import brief_portrait
 from app.service import public_error
 
 def valid():
@@ -37,3 +38,22 @@ class OutputValidationTests(unittest.TestCase):
     def test_summary_empty_consensus_is_legitimate(self):
         parsed=Synthesis.model_validate(dict(analysis='教练之间暂未形成明确共识，需要逐项核对材料依据。',consensus=[],disagreements='观点不同',action_plan='重新核对题干要求'))
         self.assertEqual(parsed.consensus,[]);self.assertEqual(parsed.disagreements,['观点不同'])
+
+    def test_summary_more_than_eight_recommendations_is_lossless(self):
+        tips=[f'第{i}项具体修改建议' for i in range(1,21)]
+        for value in [tips,'\n'.join(tips)]:
+            parsed=Synthesis.model_validate(dict(analysis='依据原答和题干核对了材料运用上的问题。',consensus=[],disagreements=[],action_plan=value))
+            self.assertEqual(parsed.action_plan,tips)
+        with self.assertRaises(ValidationError):
+            Synthesis.model_validate(dict(analysis='依据原答和题干核对了材料运用上的问题。',consensus=[],disagreements=[],action_plan=[{'invalid':'shape'}]))
+
+    def test_long_portrait_is_bounded_and_deduplicated(self):
+        raw=dict(analysis='趋势说明。'*200,strengths=['优势甲']*10+['优势乙'],weaknesses=['关键短板。'*50]*10,action_plan=[f'训练{i}：'+('一个具体动作。'*50) for i in range(20)])
+        parsed=Portrait.model_validate(raw).model_dump()
+        brief=brief_portrait(parsed)
+        self.assertLessEqual(len(brief['analysis']),120)
+        self.assertEqual(brief['strengths'],['优势甲','优势乙'])
+        self.assertEqual(len(brief['weaknesses']),1)
+        self.assertEqual(len(brief['action_plan']),3)
+        self.assertTrue(all(len(t)<=60 for t in brief['action_plan']))
+        self.assertEqual(parsed['analysis'],raw['analysis'])

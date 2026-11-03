@@ -56,9 +56,9 @@ class MockModel(BaseHTTPRequestHandler):
                 q['word_max']=str(q['word_max'])+'字'
             result={'data':result}
         elif task.startswith('汇总'):
-            result=dict(analysis='模拟汇总：各模型独立批改已完成，建议加强材料要点的分类与表达。',consensus=['需要更加具体的材料支撑'],disagreements=['评分存在一定分差'],action_plan=['先列出要点，再用短句组织'])
+            result=dict(analysis='模拟汇总：各模型独立批改已完成，建议加强材料要点的分类与表达。',consensus=['需要更加具体的材料支撑'],disagreements=['评分存在一定分差'],action_plan=[f'训练{i}：先列出要点，再用短句组织' for i in range(12)])
         elif task.startswith('基于全部'):
-            result=dict(analysis='模拟历史画像：已分析全部历史摘要，当前应加强材料运用与结构表达。',strengths=['能够持续完成练习'],weaknesses=['要点提炼有待加强'],action_plan=['每天复盘一个遗漏要点'])
+            result=dict(analysis='模拟历史画像：已分析全部历史摘要，当前应加强材料运用与结构表达。'*50,strengths=['能够持续完成练习']*12,weaknesses=['要点提炼有待加强']*12,action_plan=[f'训练{i}：每天复盘一个遗漏要点' for i in range(12)])
         else:result={'ok':True}
         self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
         self.wfile.write(json.dumps({'choices':[{'message':{'content':json.dumps(result,ensure_ascii=False)},'finish_reason':'stop'}]}).encode())
@@ -423,6 +423,10 @@ def main():
                 assert counts['coach-a']==3,counts
                 assert counts['coach-b']==4,counts
                 page.goto(base+'/#profile');expect(page.locator('.forecast-total')).to_contain_text('85',timeout=20000)
+                expect(page.get_by_role('heading',name='AI 的长期观察 · 要点',exact=True)).to_be_visible()
+                portrait=httpx.get(base+'/api/profile').json()['portrait']['result']
+                assert len(portrait['analysis'])<=120 and len(portrait['action_plan'])<=3
+                assert len(portrait['strengths'])<=2 and len(portrait['weaknesses'])<=2
                 page.screenshot(path='/tmp/shenlun-profile-tested.png',full_page=True)
                 page.goto(base+'/#history');expect(page.locator('tbody tr')).to_have_count(3)
                 page.get_by_role('link',name='查看 →').first.click();expect(page.get_by_text(answers[-1]['answer'],exact=True)).to_be_visible()

@@ -152,9 +152,9 @@ class Synthesis(BaseModel):
     def list_text(cls,value):return text_list(value)
 
     analysis: str = Field(min_length=10, max_length=10000)
-    consensus: list[str] = Field(max_length=10)
-    disagreements: list[str] = Field(max_length=10)
-    action_plan: list[str] = Field(min_length=1, max_length=8)
+    consensus: list[str] = Field(max_length=64)
+    disagreements: list[str] = Field(max_length=64)
+    action_plan: list[str] = Field(min_length=1, max_length=64)
 
 class Portrait(BaseModel):
     @field_validator('strengths','weaknesses','action_plan',mode='before')
@@ -162,6 +162,6 @@ class Portrait(BaseModel):
     def list_text(cls,value):return text_list(value)
 
     analysis: str = Field(min_length=10, max_length=12000)
-    strengths: list[str] = Field(min_length=1, max_length=8)
-    weaknesses: list[str] = Field(min_length=1, max_length=8)
-    action_plan: list[str] = Field(min_length=1, max_length=8)
+    strengths: list[str] = Field(min_length=1, max_length=64)
+    weaknesses: list[str] = Field(min_length=1, max_length=64)
+    action_plan: list[str] = Field(min_length=1, max_length=64)
