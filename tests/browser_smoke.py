@@ -210,6 +210,9 @@ def main():
                             page.locator('[data-paper-select-overflow]').click()
                             assert page.locator('#answer').evaluate('el=>el.value.slice(el.selectionStart,el.selectionEnd)')==text[len(prefix):]
                             assert page.locator('.paper-selected').count()>0
+                            for theme in ['night','paper']:
+                                page.evaluate('theme=>document.documentElement.dataset.readingTheme=theme',theme)
+                                assert page.locator('.paper-overflow.paper-selected').first.evaluate('el=>getComputedStyle(el).backgroundColor')=='rgb(165, 200, 237)'
                             page.keyboard.press('Backspace');expect(page.locator('#answer')).to_have_value(prefix)
                             expect(page.locator('[data-paper-select-overflow]')).not_to_be_visible()
                             expect(page.locator('#paper-warning')).not_to_be_visible()
