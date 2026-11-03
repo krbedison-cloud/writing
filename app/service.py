@@ -11,6 +11,7 @@ from .llm import call_model, ModelError
 from .materials import prepare_paper, model_question
 from .schemas import Grade, Synthesis, Portrait, PaperInput, ReferenceDraft, DIMENSIONS, KINDS
 from .paper import check_paper
+from .output_validation import validation_message
 
 GRADING_POLICY = 'question-first-v1'
 QUESTION_FIRST = '以question.prompt的完整题干为准，先辨明任务、作答对象、文体、内容范围、格式及字数，再从question.materials提炼可核验的评分要点，最后逐项对照用户answer。kind只表示20/30/50分训练档，不代表文体。题干未要求的标题、称呼、落款、日期不得强加；格式只在本题任务确需时评价。不得用其他题目、旧批改或固定文体模板替代本题。题干有歧义须说明不确定性，不能臆造缺失要求。'
@@ -26,7 +27,7 @@ def public_error(exc):
     if isinstance(exc, ModelError):
         return str(exc)
     if isinstance(exc, ValidationError):
-        return '模型输出未通过结构校验，请检查必填字段、分数与维度范围后重试'
+        return validation_message(exc)
     return '任务执行失败，原答案和已完成结果已保留；可重试'
 
 class Service:
@@ -154,7 +155,7 @@ class Service:
                 # Never silently substitute a different model into an existing attempt.
                 if (p['model'], p['base_url'], p['protocol']) != (snapshot['model'], snapshot['base_url'], snapshot['protocol']):
                     raise ModelError('模型配置已改变，请新建作答；不能将新模型混入旧批改')
-                raw = await self.ask(p, '独立批改。审题分析task_analysis中，task为本题任务，genre为本题所需文体（无固定文体则明确说明），requirements逐条摘录或忠实概述题干要求，material_basis引用本题材料并说明对应要点。返回单个JSON对象 {task_analysis:{task,genre,requirements,material_basis},score,dimensions,strengths,weaknesses,suggestions,evidence,high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。score 是本题训练满分内分数；dimensions 为六个指定维度各0–100。strengths、weaknesses、suggestions、evidence 为字符串数组，high_score_self_check 为前述自检对象；evidence 必须引用原答案并解释扣分。范文须自行逐字计数、自检文体格式与25格答题纸占用行数（paper_spec），同时满足两项上限。标题、称呼、落款、日期均计字，空格和换行损失占格；用实际全角空格表示缩进和对齐，范文纯文本，不要Markdown或字数说明。'+QUESTION_FIRST, {'full_score':full, 'dimensions':DIMENSIONS, 'rubric': TASK_RUBRIC, 'grading_policy': GRADING_POLICY, 'calibration':'优秀应满足题目核心要求且有充分材料或论证支撑；指出缺失与具体扣分理由，不因语言华丽忽略离题。自行拟定评分细则并保持一致；这不是官方阅卷。', 'question':q, 'answer':a['answer'], 'answer_layout':check_paper(a['answer'],q['paper_spec'])})
+                raw = await self.ask(p, '独立批改。审题分析task_analysis中，task为本题任务，genre为本题所需文体（无固定文体则明确说明），requirements逐条摘录或忠实概述题干要求，material_basis引用本题材料并说明对应要点。返回单个JSON对象 {task_analysis:{task,genre,requirements,material_basis},score,dimensions,strengths,weaknesses,suggestions,evidence,high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。score 是本题训练满分内分数；dimensions 为六个指定维度各0–100。dimensions必须是六个指定中文名称为键、0–100数字为值的对象，不要嵌套说明；strengths、weaknesses、suggestions、evidence必须为字符串数组，前三项无内容可返回空数组，evidence须提供具体评分证据；high_score_answer必须为完整纯文本字符串；high_score_self_check 为前述自检对象；evidence 必须引用原答案并解释扣分。范文须自行逐字计数、自检文体格式与25格答题纸占用行数（paper_spec），同时满足两项上限。标题、称呼、落款、日期均计字，空格和换行损失占格；用实际全角空格表示缩进和对齐，范文纯文本，不要Markdown或字数说明。'+QUESTION_FIRST, {'full_score':full, 'dimensions':DIMENSIONS, 'rubric': TASK_RUBRIC, 'grading_policy': GRADING_POLICY, 'calibration':'优秀应满足题目核心要求且有充分材料或论证支撑；指出缺失与具体扣分理由，不因语言华丽忽略离题。自行拟定评分细则并保持一致；这不是官方阅卷。', 'question':q, 'answer':a['answer'], 'answer_layout':check_paper(a['answer'],q['paper_spec'])})
                 result = Grade.model_validate(raw)
                 if result.score > full:
                     raise ModelError(f'模型分数超过本题 {full} 分满分，结果未计入均分')

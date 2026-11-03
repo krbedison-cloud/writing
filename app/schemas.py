@@ -1,4 +1,5 @@
 from typing import Literal
+from .output_validation import number, text_list, dimensions
 from pydantic import BaseModel, Field, ConfigDict, model_validator, field_validator, AliasChoices
 
 KINDS = {"summary": ("概括 / 短简报", 20), "practical": ("应用文 / 短评", 30), "essay": ("大作文", 50)}
@@ -102,6 +103,10 @@ class HighlightColor(BaseModel):
     color: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
 
 class TaskAnalysis(BaseModel):
+    @field_validator('requirements','material_basis',mode='before')
+    @classmethod
+    def list_text(cls,value):return text_list(value)
+
     task: str = Field(min_length=1, max_length=1000)
     genre: str = Field(min_length=1, max_length=200)
     requirements: list[str] = Field(min_length=1, max_length=12)
@@ -111,26 +116,50 @@ class Grade(ReferenceDraft):
     task_analysis: TaskAnalysis | None = None
     score: float = Field(ge=0, le=50, allow_inf_nan=False)
     dimensions: dict[str, float]
-    strengths: list[str] = Field(min_length=1, max_length=10)
-    weaknesses: list[str] = Field(min_length=1, max_length=10)
-    suggestions: list[str] = Field(min_length=1, max_length=10)
+    strengths: list[str] = Field(max_length=10)
+    weaknesses: list[str] = Field(max_length=10)
+    suggestions: list[str] = Field(max_length=10)
     evidence: list[str] = Field(min_length=1, max_length=12)
     high_score_answer: str = Field(min_length=10, max_length=12000)
     high_score_self_check: ReferenceSelfCheck | None = None
-    @model_validator(mode="after")
-    def dimensions_valid(self):
+    @field_validator('task_analysis',mode='before')
+    @classmethod
+    def optional_analysis(cls,value):
+        if value is None:return None
+        try:return TaskAnalysis.model_validate(value)
+        except (ValueError,TypeError):return None
+    @field_validator('score',mode='before')
+    @classmethod
+    def numeric_score(cls,value):return number(value)
+    @field_validator('strengths','weaknesses','suggestions','evidence',mode='before')
+    @classmethod
+    def list_text(cls,value):return text_list(value)
+    @field_validator('dimensions',mode='before')
+    @classmethod
+    def dimension_shape(cls,value):return dimensions(value)
+    @field_validator('dimensions')
+    @classmethod
+    def dimensions_valid(cls,value):
         import math
-        if set(self.dimensions) != set(DIMENSIONS) or any(not math.isfinite(v) or not 0 <= v <= 100 for v in self.dimensions.values()):
-            raise ValueError("必须返回六项 0–100 维度分")
-        return self
+        if set(value)!=set(DIMENSIONS) or any(not math.isfinite(v) or not 0<=v<=100 for v in value.values()):
+            raise ValueError('必须返回六项0–100维度分')
+        return value
 
 class Synthesis(BaseModel):
+    @field_validator('consensus','disagreements','action_plan',mode='before')
+    @classmethod
+    def list_text(cls,value):return text_list(value)
+
     analysis: str = Field(min_length=10, max_length=10000)
-    consensus: list[str] = Field(min_length=1, max_length=10)
+    consensus: list[str] = Field(max_length=10)
     disagreements: list[str] = Field(max_length=10)
     action_plan: list[str] = Field(min_length=1, max_length=8)
 
 class Portrait(BaseModel):
+    @field_validator('strengths','weaknesses','action_plan',mode='before')
+    @classmethod
+    def list_text(cls,value):return text_list(value)
+
     analysis: str = Field(min_length=10, max_length=12000)
     strengths: list[str] = Field(min_length=1, max_length=8)
     weaknesses: list[str] = Field(min_length=1, max_length=8)

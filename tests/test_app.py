@@ -345,6 +345,25 @@ class AppTests(unittest.TestCase):
             updated['status']='running';self.app.state.service.db.put('attempts',a['id'],updated,updated['created_at'])
             self.assertEqual(self.client.post(path,json={'provider_id':second['id']}).status_code,409)
 
+    def test_model_shape_compatibility_and_field_specific_failure(self):
+        p=self.make_paper()
+        async def compatible(provider,task,data):
+            if task.startswith('独立批改'):
+                result=grade();result.update(score='16分',task_analysis={'task':'不完整审题'},strengths='观点清晰',weaknesses=[])
+                result['dimensions']={key:{'score':'70分'} for key in DIMENSIONS}
+                return result
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=compatible):a=self.submit(p)
+        self.assertEqual(a['status'],'completed');self.assertEqual(a['mean_score'],16)
+        self.assertIsNone(a['grades'][0]['result']['task_analysis'])
+        async def invalid(provider,task,data):
+            if task.startswith('独立批改'):
+                result=grade();result.pop('evidence');return result
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=invalid):b=self.submit(p)
+        self.assertEqual(b['status'],'failed');self.assertIsNone(b['mean_score'])
+        self.assertIn('评分证据：缺失必填字段',b['grades'][0]['error'])
+
     def test_all_fail_no_fake_zero_score(self):
         p=self.make_paper();bad=self.add_model('bad');a=self.submit(p,models=[bad['id']])
         self.assertEqual(a['status'],'failed');self.assertIsNone(a['mean_score'])
