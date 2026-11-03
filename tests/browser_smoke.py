@@ -227,6 +227,16 @@ def main():
                         assert selected==[capacity,len(overlong)],selected
                         page.keyboard.press('Backspace');expect(page.locator('#answer')).to_have_value(kept)
                         page.locator('#answer').press('Control+a');page.keyboard.press('Backspace');expect(page.locator('#answer')).to_have_value('')
+                    if index==0:
+                        for text,cell_index,visible in [('1.措施2026',0,'1.'),('甲'*25+'，乙',24,'甲，'),('甲'*24+'（内容）',25,'（'),('甲'*24+'——乙',25,'—')]:
+                            page.locator('#answer').fill(text)
+                            expect(page.locator(f'.paper-cell[data-cell="{cell_index}"]')).to_have_text(visible)
+                        page.locator('#answer').fill('1.措施')
+                        cell=page.locator('.paper-cell[data-cell="0"]');bounds=cell.bounding_box()
+                        cell.click(position={'x':bounds['width']/2,'y':bounds['height']/2})
+                        page.keyboard.insert_text('2');expect(page.locator('#answer')).to_have_value('12.措施')
+                        page.locator('#answer').fill('1.推进数字化，2026年继续实施。\n　　'+'甲'*23+'，下一行正文。')
+                        page.screenshot(path='/tmp/shenlun-chinese-paper.png',full_page=True)
                     # Every row and all 25 columns fit beside the materials, including the 48-row essay.
                     for width,height in [(1280,800),(1440,900),(1920,1080)]:
                         page.set_viewport_size({'width':width,'height':height})

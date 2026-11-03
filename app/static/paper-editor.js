@@ -55,6 +55,7 @@
     const slot=this.layout.slots[index],value=slot?.text||'';
     if(node.textContent!==value)node.textContent=value;
     node.classList.toggle('paper-overflow',index>=this.spec.cells);
+    node.classList.toggle('paper-packed',!!slot?.packed);node.classList.toggle('paper-hanging',!!slot?.hanging);node.classList.toggle('paper-hanging-many',!!slot?.hanging&&Array.from(value).length>2);
    });
    this.root.querySelector('[data-paper-select-overflow]').hidden=this.layout.overflow_start===null;
    this.onChange?.(PaperLayout.check(this.input.value,this.spec));
@@ -92,7 +93,7 @@
    if(!this.layout||!this.input.isConnected)return;
    const start=this.input.selectionStart,end=this.input.selectionEnd,focus=this.input.selectionDirection==='backward'?start:end;
    const cursor=this.layout.carets[focus]||this.layout.carets.at(-1)||{row:0,col:0};
-   let index=cursor.row*this.spec.columns+cursor.col;
+   let index=Math.floor(cursor.row*this.spec.columns+cursor.col);
    const after=index>=this.cellNodes.length;index=Math.min(index,this.cellNodes.length-1);
    const active=document.activeElement===this.input;
    const from=this.layout.carets[start],to=this.layout.carets[end];
@@ -105,8 +106,9 @@
    });
    const cell=this.cellNodes[index];if(!cell)return;
    if(this.root.dataset.mode==='grid'){
-    const rect=cell.getBoundingClientRect(),base=this.surface.getBoundingClientRect();
-    rule('#paper-editor[data-mode="grid"] #answer').style.setProperty('left',Math.max(0,rect.left-base.left+(after?rect.width-2:0))+'px');
+    const rect=cell.getBoundingClientRect(),base=this.surface.getBoundingClientRect(),fraction=cursor.col-Math.floor(cursor.col);
+    rule('#paper-grid .paper-caret::before').style.setProperty('left',after?'100%':fraction*100+'%');
+    rule('#paper-editor[data-mode="grid"] #answer').style.setProperty('left',Math.max(0,rect.left-base.left+(after?rect.width-2:fraction*rect.width))+'px');
     rule('#paper-editor[data-mode="grid"] #answer').style.setProperty('top',Math.max(0,rect.top-base.top)+'px');
    }
   }
@@ -136,17 +138,22 @@
    const col=Math.max(0,Math.min(this.spec.columns-1,Math.floor((x-first.left)/first.width)));
    return nearest.children[col+1];
   }
+  atPoint(cell,x){
+   const index=Number(cell.dataset.cell),rect=cell.getBoundingClientRect(),slot=this.layout.slots[index];
+   if(slot&&(slot.packed||slot.hanging)){const chars=Array.from(slot.text),count=Math.round(Math.max(0,Math.min(1,(x-rect.left)/rect.width))*chars.length);return slot.start+chars.slice(0,count).join('').length;}
+   return this.atCell(index,x>rect.left+rect.width/2);
+  }
   range(anchor,end){this.input.focus({preventScroll:true});this.input.setSelectionRange(Math.min(anchor,end),Math.max(anchor,end),end<anchor?'backward':'forward');this.selection();}
   pointerDown(event){
    const cell=this.hitCell(event.clientX,event.clientY);if(!cell||event.button!==0)return;
-   event.preventDefault();const rect=cell.getBoundingClientRect();const index=this.atCell(Number(cell.dataset.cell),event.clientX>rect.left+rect.width/2);
+   event.preventDefault();const rect=cell.getBoundingClientRect();const index=this.atPoint(cell,event.clientX);
    const anchor=event.shiftKey?(this.input.selectionDirection==='backward'?this.input.selectionEnd:this.input.selectionStart):index;
    this.drag=anchor;this.grid.setPointerCapture(event.pointerId);this.range(anchor,index);
   }
   pointerMove(event){
    if(this.drag===null)return;
    const cell=this.hitCell(event.clientX,event.clientY);if(!cell)return;
-   const rect=cell.getBoundingClientRect();this.range(this.drag,this.atCell(Number(cell.dataset.cell),event.clientX>rect.left+rect.width/2));
+   const rect=cell.getBoundingClientRect();this.range(this.drag,this.atPoint(cell,event.clientX));
   }
   selectOverflow(){
    const start=this.layout.overflow_start;if(start===null)return;
@@ -190,7 +197,7 @@
   const container=document.createElement('div');container.className='paper-preview';
   const layout=PaperLayout.analyze(answer,spec),grid=document.createElement('div');grid.className='paper-grid';
   const nodes=cells(grid,Math.max(spec.rows,layout.used_rows,1),spec.columns);
-  nodes.forEach((node,index)=>{node.textContent=layout.slots[index]?.text||'';node.classList.toggle('paper-overflow',index>=spec.cells);});
+  nodes.forEach((node,index)=>{node.textContent=layout.slots[index]?.text||'';node.classList.toggle('paper-packed',!!layout.slots[index]?.packed);node.classList.toggle('paper-hanging',!!layout.slots[index]?.hanging);node.classList.toggle('paper-hanging-many',!!layout.slots[index]?.hanging&&Array.from(layout.slots[index].text).length>2);node.classList.toggle('paper-overflow',index>=spec.cells);});
   container.append(grid);return container;
  }
  root.GridPaper={Editor,preview,rule};

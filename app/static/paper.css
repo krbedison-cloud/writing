@@ -109,3 +109,9 @@
  .paper-caret::before { animation: none; }
  .navigation-drawer .sidebar, .navigation-drawer .nav-reveal { transition: none !important; }
 }
+
+/* Mixed half-width runs share a cell; line-end punctuation stays with the last character. */
+.paper-cell.paper-packed { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: calc(var(--paper-font) * .9); }
+.paper-cell.paper-hanging { font-size: calc(var(--paper-font) * .58); letter-spacing: -.08em; }
+
+.paper-cell.paper-hanging-many { font-size: calc(var(--paper-font) * .4); }

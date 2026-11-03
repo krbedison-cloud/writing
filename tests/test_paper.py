@@ -43,19 +43,26 @@ class PaperTests(unittest.TestCase):
     def test_python_browser_layout_parity(self):
         rng=random.Random(25)
         samples=['','甲'*25,'甲'*25+'\n','甲\n\n乙','　　标题\n落款2026年','A\u0301😀\t甲\r\n乙','\ufeff\u0085\u001c']
-        alphabet=['甲','乙','A','2','，','。','\n','\t',' ','　','😀','\u0301','\u200d']
+        alphabet=['甲','乙','A','2','，','。','\n','\t',' ','　','😀','\u0301','\u200d','（','）','“','”','—','…','.','%']
         samples += [''.join(rng.choice(alphabet) for _ in range(rng.randrange(1,150))) for _ in range(100)]
         spec=paper_spec({'word_max':350})
         script="const lib=require(process.argv[1]);let s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>{const d=JSON.parse(s);process.stdout.write(JSON.stringify(d.samples.map(x=>lib.check(x,d.spec))))});"
         module=str(Path(__file__).resolve().parents[1]/'app/static/paper-layout.js')
         result=subprocess.run(['node','-e',script,module],input=json.dumps({'samples':samples,'spec':spec}),capture_output=True,text=True,check=True)
         self.assertEqual(json.loads(result.stdout),[check_paper(text,spec) for text in samples])
+    def test_chinese_manuscript_rules_and_legacy(self):
+        spec=paper_spec({'word_max':350})
+        for text,cells in [('1.',1),('2026',2),('123',2),('12.5%',3),('ABC',2),('汉字',2),('甲'*25+'，',25),('甲'*25+'。”',25),('甲'*24+'（内容）',29),('甲'*24+'——乙',28),('甲'*24+'……乙',28)]:
+            with self.subTest(text=text):self.assertEqual(check_paper(text,spec)['occupied_cells'],cells)
+        self.assertEqual(check_paper('1.',dict(spec,layout_version=1))['occupied_cells'],2)
+        self.assertEqual(check_paper('甲'*25+'，',spec)['word_count'],26)
+        self.assertEqual(check_paper('甲'*25+'\n，',spec)['occupied_cells'],26)
     def test_bad_model_self_count_does_not_discard_valid_grade(self):
         raw=dict(score=15,dimensions={k:70 for k in ['审题立意','要点提炼','材料运用','结构逻辑','语言表达','文体规范']},strengths=['优点'],weaknesses=['不足'],suggestions=['建议'],evidence=['依据'],high_score_answer='参考范文包含具体材料依据和规范表达。',high_score_self_check={'word_count':'不知道'})
         self.assertIsNone(Grade.model_validate(raw).high_score_self_check)
     def test_overflow_selection_preserves_fitting_prefix_and_unicode(self):
         spec=paper_spec({'word_max':350})
-        cases=[('甲'*350+'超出',350,'甲'*350),
+        cases=[('甲'*350+'超出',350,'甲'*350),('甲'*349+'12尾',351,'甲'*349+'12'),('1'*800,700,'1'*700),('甲'*350+'，尾',351,'甲'*350+'，'),
                ('甲'*349+'\t尾',349,'甲'*349),
                ('甲'*350+'\n\n',351,'甲'*350+'\n'),
                ('\n'*15,14,'\n'*14),
