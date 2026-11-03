@@ -58,6 +58,8 @@
    }else{
     const run=ascii.test(token),width=run?Math.ceil(token.length/2):['——','……','\t'].includes(token)?2:1;
     if(close.includes(token)&&col===columns&&previous&&!whitespace.test(previous.text)){
+     if(previous.hanging_start===undefined)previous.hanging_start=previous.text.length;
+     carets[start]={row,col:columns-.05};
      previous.text+=token;previous.end=end;previous.hanging=true;
     }else{
      if((open.includes(token)&&col===columns-1)||(width<=columns&&col+width>columns)){

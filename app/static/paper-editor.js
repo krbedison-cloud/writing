@@ -19,6 +19,20 @@
   }
   return cache;
  }
+ function paintCell(node,slot){
+  const value=slot?.text||'',hanging=slot?.hanging_start;
+  if(node.paperValue!==value||node.paperHanging!==hanging){
+   node.paperValue=value;node.paperHanging=hanging;
+   if(Number.isInteger(hanging)){
+    const base=document.createElement('span'),punctuation=document.createElement('span');
+    base.className='paper-hanging-base';base.textContent=value.slice(0,hanging);
+    punctuation.className='paper-hanging-punctuation';punctuation.textContent=value.slice(hanging);
+    node.replaceChildren(base,punctuation);
+   }else node.textContent=value;
+  }
+  node.classList.toggle('paper-packed',!!slot?.packed);
+  node.classList.toggle('paper-hanging',!!slot?.hanging);
+ }
  class Editor{
   constructor({spec,onChange,toast}){
    this.spec=spec;this.onChange=onChange;this.toast=toast;
@@ -52,10 +66,9 @@
    const total=Math.max(this.spec.rows,this.layout.used_rows,1);
    if(total!==this.rows){this.grid.replaceChildren();this.cellNodes=cells(this.grid,total,this.spec.columns);this.rows=total;}
    this.cellNodes.forEach((node,index)=>{
-    const slot=this.layout.slots[index],value=slot?.text||'';
-    if(node.textContent!==value)node.textContent=value;
+    const slot=this.layout.slots[index];
+    paintCell(node,slot);
     node.classList.toggle('paper-overflow',index>=this.spec.cells);
-    node.classList.toggle('paper-packed',!!slot?.packed);node.classList.toggle('paper-hanging',!!slot?.hanging);node.classList.toggle('paper-hanging-many',!!slot?.hanging&&Array.from(value).length>2);
    });
    this.root.querySelector('[data-paper-select-overflow]').hidden=this.layout.overflow_start===null;
    this.onChange?.(PaperLayout.check(this.input.value,this.spec));
@@ -72,7 +85,7 @@
    // Choose the largest square that keeps every row inside the available area.
    for(let pages=1;pages<=Math.min(this.rows,12);pages++){
     const rows=Math.ceil(this.rows/pages);
-    const cell=Math.floor(Math.min(preferred+4,(width-28-16*(pages-1)-22*pages)/(25*pages),(height-30)/(rows*1.28))*2)/2;
+    const cell=Math.floor(Math.min(preferred+4,(width-(preferred*2+28)-(preferred*2+12)*(pages-1)-22*pages)/(25*pages),(height-30)/(rows*1.28))*2)/2;
     if(cell>best.cell+.4)best={cell,pages,rows};
    }
    const cell=Math.max(1,best.cell),style=rule('#paper-editor').style;
@@ -80,6 +93,7 @@
    style.setProperty('--paper-font',Math.min(preferred,cell*.84)+'px');
    style.setProperty('--paper-row',cell*1.28+'px');
    style.setProperty('--paper-page-rows',String(best.rows));
+   style.setProperty('--paper-page-gap',(preferred*2+12)+'px');
    this.grid.querySelectorAll('.paper-row').forEach((row,i)=>{
     row.classList.toggle('paper-page-start',i%best.rows===0);
     row.classList.toggle('paper-page-end',i%best.rows===best.rows-1||i===this.rows-1);
@@ -140,7 +154,12 @@
   }
   atPoint(cell,x){
    const index=Number(cell.dataset.cell),rect=cell.getBoundingClientRect(),slot=this.layout.slots[index];
-   if(slot&&(slot.packed||slot.hanging)){const chars=Array.from(slot.text),count=Math.round(Math.max(0,Math.min(1,(x-rect.left)/rect.width))*chars.length);return slot.start+chars.slice(0,count).join('').length;}
+   if(Number.isInteger(slot?.hanging_start)){
+    if(x>=rect.right)return slot.end;
+    const base=Array.from(slot.text.slice(0,slot.hanging_start)),count=Math.round(Math.max(0,Math.min(1,(x-rect.left)/rect.width))*base.length);
+    return slot.start+base.slice(0,count).join('').length;
+   }
+   if(slot&&slot.packed){const chars=Array.from(slot.text),count=Math.round(Math.max(0,Math.min(1,(x-rect.left)/rect.width))*chars.length);return slot.start+chars.slice(0,count).join('').length;}
    return this.atCell(index,x>rect.left+rect.width/2);
   }
   range(anchor,end){this.input.focus({preventScroll:true});this.input.setSelectionRange(Math.min(anchor,end),Math.max(anchor,end),end<anchor?'backward':'forward');this.selection();}
@@ -197,7 +216,7 @@
   const container=document.createElement('div');container.className='paper-preview';
   const layout=PaperLayout.analyze(answer,spec),grid=document.createElement('div');grid.className='paper-grid';
   const nodes=cells(grid,Math.max(spec.rows,layout.used_rows,1),spec.columns);
-  nodes.forEach((node,index)=>{node.textContent=layout.slots[index]?.text||'';node.classList.toggle('paper-packed',!!layout.slots[index]?.packed);node.classList.toggle('paper-hanging',!!layout.slots[index]?.hanging);node.classList.toggle('paper-hanging-many',!!layout.slots[index]?.hanging&&Array.from(layout.slots[index].text).length>2);node.classList.toggle('paper-overflow',index>=spec.cells);});
+  nodes.forEach((node,index)=>{paintCell(node,layout.slots[index]);node.classList.toggle('paper-overflow',index>=spec.cells);});
   container.append(grid);return container;
  }
  root.GridPaper={Editor,preview,rule};

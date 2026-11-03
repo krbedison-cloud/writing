@@ -248,6 +248,16 @@ def main():
                         for text,cell_index,visible in [('1.措施2026',0,'1.'),('甲'*25+'，乙',24,'甲，'),('甲'*24+'（内容）',25,'（'),('甲'*24+'——乙',25,'—')]:
                             page.locator('#answer').fill(text)
                             expect(page.locator(f'.paper-cell[data-cell="{cell_index}"]')).to_have_text(visible)
+                        # Hanging punctuation must not shrink the last Chinese character or its punctuation.
+                        for suffix in ['，','。','；','！”','。”）']:
+                            page.locator('#answer').fill('甲'*25+suffix+'乙')
+                            last=page.locator('.paper-cell[data-cell="24"]')
+                            expect(last.locator('.paper-hanging-base')).to_have_text('甲')
+                            expect(last.locator('.paper-hanging-punctuation')).to_have_text(suffix)
+                            expect(page.locator('.paper-cell[data-cell="25"]')).to_have_text('乙')
+                            metrics=last.evaluate("""el=>{const base=el.querySelector('.paper-hanging-base'),punct=el.querySelector('.paper-hanging-punctuation'),normal=el.parentElement.querySelector('.paper-cell'),b=base.getBoundingClientRect(),p=punct.getBoundingClientRect(),v=document.querySelector('#paper-viewport').getBoundingClientRect(),m=new DOMMatrix(getComputedStyle(punct).transform);return {same:getComputedStyle(base).fontSize===getComputedStyle(normal).fontSize&&getComputedStyle(punct).fontSize===getComputedStyle(normal).fontSize,unscaled:m.a===1&&m.d===1,separate:p.left>=b.right-.5,visible:p.right<=v.right+.5};}""")
+                            assert all(metrics.values()),metrics
+                        page.locator('#paper-surface').screenshot(path='/tmp/shenlun-full-size-punctuation.png')
                         page.locator('#answer').fill('1.措施')
                         cell=page.locator('.paper-cell[data-cell="0"]');bounds=cell.bounding_box()
                         cell.click(position={'x':bounds['width']/2,'y':bounds['height']/2})
@@ -347,6 +357,12 @@ def main():
                         assert updated['mean_score']==a['mean_score'] and updated['answer']==a['answer']
                         assert updated['grades'][0]['result']['high_score_answer']==original_reference
                         assert updated['grades'][0]['references'][-1]['layout_check']['valid']
+                        page.evaluate("""()=>{const host=document.createElement('div');host.id='punctuation-preview-check';host.className='reference-paper-target';host.append(GridPaper.preview('甲'.repeat(25)+'。”乙',state.attempt.paper_spec));document.querySelector('#main').append(host);}""")
+                        preview=page.locator('#punctuation-preview-check .paper-hanging')
+                        expect(preview.locator('.paper-hanging-base')).to_have_text('甲')
+                        assert preview.evaluate("el=>getComputedStyle(el.querySelector('.paper-hanging-base')).fontSize===getComputedStyle(el.parentElement.querySelector('.paper-cell')).fontSize")
+                        assert page.locator('#punctuation-preview-check').evaluate('el=>el.scrollWidth<=el.clientWidth+1')
+                        page.locator('#punctuation-preview-check').evaluate('el=>el.remove()')
                         expect(page.locator('.reference-paper-target')).to_be_visible()
                         expect(page.locator('.paper-preview .paper-row')).to_have_count(expected['questions'][0]['paper_spec']['rows'])
                         page.locator('.reference-version').select_option('original')
