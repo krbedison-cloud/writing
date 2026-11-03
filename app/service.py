@@ -12,6 +12,7 @@ from .materials import prepare_paper, model_question
 from .schemas import Grade, Synthesis, Portrait, PaperInput, ReferenceDraft, DIMENSIONS, KINDS
 from .paper import check_paper
 from .output_validation import validation_message
+from .import_validation import FORMAT, normalize_import, import_errors
 
 GRADING_POLICY = 'question-first-v1'
 QUESTION_FIRST = '以question.prompt的完整题干为准，先辨明任务、作答对象、文体、内容范围、格式及字数，再从question.materials提炼可核验的评分要点，最后逐项对照用户answer。kind只表示20/30/50分训练档，不代表文体。题干未要求的标题、称呼、落款、日期不得强加；格式只在本题任务确需时评价。不得用其他题目、旧批改或固定文体模板替代本题。题干有歧义须说明不确定性，不能臆造缺失要求。'
@@ -81,11 +82,28 @@ class Service:
         try:
             self.stage(j, '大模型识别题型与来源')
             paper = self.db.get('papers', paper_id)
-            result = await self.ask(self.provider(provider_id), '识别试卷：返回 {title,year,province,volume,materials,questions:[{number,kind,prompt,word_min,word_max,classification_note}]}。kind 仅 summary/practical/essay。按训练档：短概括与不超过400字的短简报=summary(20分)，应用文/500–600字短评=practical(30分)，长篇议论=essay(50分)。保留原文体和字数要求。来源不确定写待确认。完整摘录题干，不包含答题纸；只从提供文本取材。', {'filename':paper['filename'], 'text':paper['raw_text']})
-            parsed = PaperInput.model_validate(result).model_dump()
-            old_ids = {q['number']:q['id'] for q in paper['questions']}
+            provider = self.provider(provider_id)
+            payload = {'filename':paper['filename'], 'text':paper['raw_text']}
+            for attempt in range(2):
+                try:
+                    result = await self.ask(provider, FORMAT, payload)
+                    parsed = normalize_import(result, paper)
+                    break
+                except (ValidationError, ModelError) as exc:
+                    # Only repair malformed output; do not repeat timeouts/HTTP failures.
+                    if isinstance(exc, ModelError) and 'JSON' not in str(exc):raise
+                    detail = import_errors(exc)
+                    if attempt:
+                        raise ModelError('AI识别格式校正后仍未通过：'+detail+'。原试卷已保留，可重新识别或手动校对') from exc
+                    self.stage(j, '识别结果格式校正中（最多一次）')
+                    payload = {**payload, 'format_errors':detail,
+                               'instruction':'上次输出未通过校验，请按指定JSON字段重新提取完整试卷。'}
+            old_questions = {q['number']:q for q in paper['questions']}
             for q in parsed['questions']:
-                q['id'] = old_ids.get(q['number'], uid())
+                old = old_questions.get(q['number'], {})
+                q['id'] = old.get('id', uid())
+                if old.get('prompt') == q['prompt'] and old.get('material_mode') in ('selected','all','custom'):
+                    q.update({k:old[k] for k in ('material_mode','material_ids','custom_materials') if k in old})
             paper.update(parsed, confirmed=False)
             paper = prepare_paper(paper)
             self.db.put('papers', paper_id, paper, paper['created_at'])

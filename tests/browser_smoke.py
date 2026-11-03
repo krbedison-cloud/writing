@@ -48,6 +48,13 @@ class MockModel(BaseHTTPRequestHandler):
             answer=header+'\n　　'+'甲'*(target-len(header))
             check=check_paper(answer,spec)
             result=dict(high_score_answer=answer,high_score_self_check=dict(word_count=check['word_count'],used_rows=check['used_rows'],complies=check['valid'],format_note='已检查标题、段首缩进和换行占格'))
+        elif task.startswith('识别试卷'):
+            from app.pdf import parse_text
+            result=parse_text(payload['text'],payload['filename']);result['year']=int(result['year'])
+            for q in result['questions']:
+                q['kind']={'summary':'概括题','practical':'应用文题','essay':'大作文题'}[q['kind']]
+                q['word_max']=str(q['word_max'])+'字'
+            result={'data':result}
         elif task.startswith('汇总'):
             result=dict(analysis='模拟汇总：各模型独立批改已完成，建议加强材料要点的分类与表达。',consensus=['需要更加具体的材料支撑'],disagreements=['评分存在一定分差'],action_plan=['先列出要点，再用短句组织'])
         elif task.startswith('基于全部'):
@@ -104,6 +111,39 @@ def main():
                 coach_b.locator('[data-action="edit-model"]').click()
                 expect(page.locator('[name="timeout_seconds"]')).to_have_value('900')
                 page.locator('[data-action="close-dialog"]').click()
+                import fitz
+                doc=fitz.open();p=doc.new_page()
+                p.insert_text((30,40),'2025年浙江省考（B卷）\n给定材料\n材料1\n独立材料甲。\n材料2\n独立材料乙。\n材料3\n独立材料丙。\n作答要求\n第一题\n请概括主要措施，不超过300字。\n第二题\n请写一则短评，不超过600字。',fontname='china-s',fontsize=12)
+                scope_pdf=Path(temp)/'scope.pdf';doc.save(scope_pdf);doc.close()
+                page.locator('#pdf-input').set_input_files(str(scope_pdf))
+                page.wait_for_url('**/#paper/*');expect(page.locator('#editor')).to_be_visible()
+                scopeid=page.url.split('/')[-1]
+                first=page.locator('.edit-q').first
+                expect(first.locator('[name="material_mode"]')).to_have_value('')
+                first.locator('[data-range-start]').select_option('2');first.locator('[data-range-end]').select_option('3')
+                first.locator('[data-action="apply-material-range"]').click()
+                expect(first.locator('[name="material_mode"]')).to_have_value('selected')
+                expect(first.locator('[name="material_id"]:checked')).to_have_count(2)
+                page.locator('.edit-q').nth(1).locator('[name="material_mode"]').select_option('all')
+                page.locator('[name="confirmed"]').check();page.locator('#paper-form button[type="submit"]').click()
+                expect(page.locator('#editor')).not_to_be_visible()
+                scoped=httpx.get(base+'/api/papers/'+scopeid).json()
+                assert scoped['questions'][0]['material_scope']['matched_ids']==[2,3]
+                assert scoped['questions'][1]['material_scope']['mode']=='all'
+                assert not scoped['requires_material_selection']
+                page.once('dialog',lambda dialog:dialog.accept())
+                page.locator('[data-action="classify-paper"]').click()
+                expect(page.get_by_text('第 1 题',exact=True)).to_be_visible()
+                for _ in range(100):
+                    jobs=httpx.get(base+'/api/jobs').json()
+                    job=next((j for j in jobs if j['kind']=='classification' and j['target_id']==scopeid),None)
+                    if job and job['status'] not in ('queued','running'):break
+                    time.sleep(.1)
+                assert job['status']=='completed',job
+                scoped=httpx.get(base+'/api/papers/'+scopeid).json()
+                assert scoped['questions'][0]['material_ids']==[2,3]
+                assert not scoped['confirmed']
+                page.goto(base+'/#papers');expect(page.locator('#paper-list')).to_be_visible()
                 if args.pdf:
                     pdf=Path(args.pdf)
                 else:
@@ -114,7 +154,10 @@ def main():
                     pdf=Path(temp)/'2026年浙江省考（A卷）.pdf';doc.save(pdf);doc.close()
                 page.locator('#pdf-input').set_input_files(str(pdf))
                 page.wait_for_url('**/#paper/*');expect(page.get_by_text('第 1 题',exact=True)).to_be_visible()
-                page.locator('[data-action="edit-paper"]').first.click();page.locator('[name="confirmed"]').check();page.locator('#paper-form button[type="submit"]').click()
+                if not page.locator('#editor').is_visible():page.locator('[data-action="edit-paper"]').first.click()
+                for select in page.locator('[name="material_mode"]').all():
+                    if select.input_value()=='':select.select_option('all')
+                page.locator('[name="confirmed"]').check();page.locator('#paper-form button[type="submit"]').click()
                 expect(page.locator('#editor')).not_to_be_visible()
                 paperid=page.url.split('/')[-1]
                 expected=httpx.get(base+'/api/papers/'+paperid).json()

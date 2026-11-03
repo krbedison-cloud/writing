@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install a tagged release on Docker Desktop without Git or a Python installation.
 set -euo pipefail
-release="${SHENLUN_VERSION:-v0.1.14}"
+release="${SHENLUN_VERSION:-v0.1.15}"
 install_dir="${SHENLUN_DIR:-$HOME/shenlun-studio}"
 requested_port="${SHENLUN_PORT:-}"
 requested_lan="${SHENLUN_LAN:-}"
@@ -23,7 +23,7 @@ fi
 repo="krbedison-cloud/writing"
 image="ghcr.io/$repo:$release"
 if [[ ! "$release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo 'SHENLUN_VERSION 必须是 v0.1.14 这样的版本标签。' >&2
+  echo 'SHENLUN_VERSION 必须是 v0.1.15 这样的版本标签。' >&2
   exit 1
 fi
 for dependency in docker curl tar; do

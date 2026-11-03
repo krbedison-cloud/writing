@@ -216,6 +216,8 @@ def create_app(data_dir=None):
             q['id'] = old.get(q['number'], uid())
         p.update(v)
         p = prepare_paper(p)
+        if p['confirmed'] and p['requires_material_selection']:
+            raise HTTPException(400, '请逐题选择材料编号范围或全部材料，再确认试卷')
         db.put('papers', id, p, p['created_at'])
         return p
     @app.post('/api/papers/{id}/classify')
@@ -246,6 +248,8 @@ def create_app(data_dir=None):
         p, old_q = found[0]
         p = prepare_paper(p)
         q = next(q for q in p['questions'] if q['id'] == old_q['id'])
+        if q['material_scope'].get('requires_choice'):
+            raise HTTPException(400, '本题材料范围尚未确认，请在校对试卷中选择材料编号范围或全部材料')
         if not p['confirmed']:
             raise HTTPException(400, '请先校对并确认试卷')
         ids = list(dict.fromkeys(value.provider_ids))

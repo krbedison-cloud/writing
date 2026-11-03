@@ -119,6 +119,7 @@ class AppTests(unittest.TestCase):
         p['questions'][0]['prompt']='根据资料3，写一份简报，字数不超过350字。'
         p['questions'][1]['prompt']='根据资料8、9，写一则短评，不超过600字。'
         p['questions'][2]['prompt']='结合给定资料，写一篇1000-1200字的议论性文章。'
+        p['questions'][2]['material_mode']='all'
         p=self.client.put('/api/papers/'+p['id'],json=p).json()
         self.assertEqual([q['material_scope']['matched_ids'] for q in p['questions']],[[3],[8,9],list(range(1,10))])
         focused=self.client.get('/api/papers/'+p['id']+'/questions/'+p['questions'][0]['id']).json()

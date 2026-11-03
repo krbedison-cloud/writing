@@ -13,7 +13,7 @@ ATOM = re.compile(rf'''[\s“”"'「」『』（(【\[]*(?P<number>{NUMBER})[ \
 PREFIX = re.compile(r'(?:给定)?(?:材料|资料)[ \t]*')
 CONNECTOR = re.compile(r'[ \t]*(?P<join>以及|及|和|与|、|，|,|至|到|[-—–~～])[ \t]*(?:(?:给定)?(?:资料|材料)[ \t]*)?')
 RANGES = {'至','到','-','—','–','~','～'}
-ALL = re.compile(r'(?:全部|所有|整份|上述全部|以上全部)(?:的)?(?:给定)?(?:材料|资料)|(?:结合|综合)(?:全部|所有)?给定(?:资料|材料)(?!\s*[0-9０-９一二三四五六七八九十（(【“])')
+ALL = re.compile(r'(?:全部|所有|整份|上述全部|以上全部)(?:的)?(?:给定)?(?:材料|资料)')
 
 
 def number_value(label):
@@ -109,10 +109,13 @@ def resolve_materials(text, question, blocks=None):
             else:
                 note, scope = '题干未限定资料编号，使用全部材料', 'all'
                 matched = [b['id'] for b in blocks]
-                review = question.get('kind') != 'essay'
+                review = True
+    requires_choice = mode not in ('all','custom') and review and len(blocks) > 1
+    if requires_choice:
+        note = '题干未能明确材料范围，请选择本题使用的材料编号范围或全部材料'
     count, total = len(selected), len(text.strip())
     return selected, dict(mode=scope, requested_ids=requested, matched_ids=matched, note=note,
-                         needs_review=review, character_count=count, total_character_count=total,
+                         needs_review=review, requires_choice=requires_choice, character_count=count, total_character_count=total,
                          saved_percent=max(0,round((1-count/total)*100)) if total else 0)
 
 
@@ -121,11 +124,13 @@ def prepare_paper(paper):
     blocks = split_materials(p['materials'])
     p['material_blocks'] = blocks
     p['materials_version'] = 1
+    p['requires_material_selection'] = False
     for q in p['questions']:
         q.setdefault('material_mode', 'auto')
         q.setdefault('material_ids', [])
         q.setdefault('custom_materials', '')
         q['materials'], q['material_scope'] = resolve_materials(p['materials'], q, blocks)
+        p['requires_material_selection'] |= q['material_scope']['requires_choice']
         q['paper_spec'] = paper_spec(q)
         q['material_signature'] = material_signature(q['materials'])
     return p
