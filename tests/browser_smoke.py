@@ -20,6 +20,8 @@ import httpx
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from app.schemas import DIMENSIONS
 from app.paper import check_paper
+from app.reference_policy import is_short_comment, SHORT_COMMENT_POLICY
+from test_reference_policy import COMMENT
 
 counts={}
 received_contexts=[]
@@ -31,6 +33,7 @@ class MockModel(BaseHTTPRequestHandler):
         data=json.loads(body['messages'][-1]['content']);task=data['task'];payload=data['data'];model=body['model']
         if task.startswith('独立批改'):
             if model=='coach-c':time.sleep(13)
+            assert (SHORT_COMMENT_POLICY in task)==is_short_comment(payload['question'])
             received_contexts.append(payload['question'])
             counts[model]=counts.get(model,0)+1
             if model=='coach-b' and counts[model]==1:
@@ -40,12 +43,14 @@ class MockModel(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({'choices':[{'finish_reason':'length','message':{'content':'partial'}}],'usage':{'completion_tokens':6000,'completion_tokens_details':{'reasoning_tokens':5900}}}).encode());return
             result=dict(score=payload['full_score']-(4 if model=='coach-a' else 6),dimensions={k:70 for k in DIMENSIONS},strengths=['观点清晰'],weaknesses=['材料要点尚有遗漏'],suggestions=['分类概括关键措施'],evidence=['原答案“加强建设”需要展开具体措施'],high_score_answer='这是模拟接口生成的参考答案，仅用于验证调用与存档流程，不是真实模型批改。',task_analysis=dict(task=payload['question']['prompt'],genre='按本题题干审题',requirements=[payload['question']['prompt']],material_basis=[payload['question']['materials'][:80]]))
         elif task.startswith(('范文校正','单独重写高分范文')):
+            assert (SHORT_COMMENT_POLICY in task)==is_short_comment(payload['question'])
             received_reference_contexts.append(payload['question'])
             spec=payload['question']['paper_spec'];header='模拟接口生成的参考范文'
             target=payload.get('target_word_count') or max(spec['word_min'],round((spec['word_max'] or spec['cells'])*.8))
             target=max(len(header)+10,min(target,(spec['word_max'] or spec['cells'])-25))
             target=max(target,spec['word_min'])
             answer=header+'\n　　'+'甲'*(target-len(header))
+            if is_short_comment(payload['question']):answer=COMMENT
             check=check_paper(answer,spec)
             result=dict(high_score_answer=answer,high_score_self_check=dict(word_count=check['word_count'],used_rows=check['used_rows'],complies=check['valid'],format_note='已检查标题、段首缩进和换行占格'))
         elif task.startswith('识别试卷'):
@@ -380,7 +385,7 @@ def main():
                     if index==0:
                         assert counts['coach-a']==good_calls and counts['coach-b']==bad_calls+1,counts
                         assert page.evaluate("window.__retryPaper===document.querySelector('.paper-preview')")
-                    expect(page.locator('#review-body')).to_contain_text('模拟接口生成',timeout=20000)
+                    expect(page.locator('#review-body')).to_contain_text('本题审题',timeout=20000)
                     # Ensure both results have arrived before moving to the next question.
                     aid=page.url.split('/')[-1]
                     for _ in range(100):
@@ -416,6 +421,18 @@ def main():
                         page.locator('[data-action="regenerate-reference"][data-direction="more"]').click()
                         expect(page.locator('.reference-version option')).to_have_count(2,timeout=20000)
                         expect(page.locator('[data-action="review-tab"].active')).to_contain_text('coach-b')
+                    if index==1 and is_short_comment(expected['questions'][index]):
+                        expect(page.get_by_text('短评形式检查：通过',exact=True)).to_be_visible()
+                        before=httpx.get(base+'/api/attempts/'+a['id']).json()
+                        selected_provider=page.locator('[data-action="regenerate-reference"][data-direction="rewrite"]').get_attribute('data-provider')
+                        page.locator('[data-action="regenerate-reference"][data-direction="rewrite"]').click()
+                        expect(page.locator('.reference-version option')).to_have_count(3,timeout=20000)
+                        refreshed=httpx.get(base+'/api/attempts/'+a['id']).json()
+                        new_grade=next(g for g in refreshed['grades'] if g['provider_id']==selected_provider)
+                        old_grade=next(g for g in before['grades'] if g['provider_id']==selected_provider)
+                        assert new_grade['result']==old_grade['result']
+                        assert new_grade['references'][-1]['style_check']['valid']
+                        assert new_grade['references'][-1]['answer']==COMMENT
                 for context in received_contexts:
                     assert context['materials']==expected['questions'][context['number']-1]['materials']
                     assert 'MANUAL_PASSAGE_ONLY' not in json.dumps(context)

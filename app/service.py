@@ -11,6 +11,7 @@ from .llm import call_model, ModelError, TruncatedOutputError
 from .materials import prepare_paper, model_question
 from .schemas import Grade, Synthesis, Portrait, PaperInput, ReferenceDraft, DIMENSIONS, KINDS
 from .paper import check_paper
+from .reference_policy import reference_policy, check_reference_style, needs_reference_repair
 from .portrait_summary import BRIEF_POLICY, NOTES_VERSION, readable_portrait, brief_points, rewrite_evidence
 from .output_validation import validation_message
 from .import_validation import FORMAT, normalize_import, import_errors
@@ -115,17 +116,18 @@ class Service:
         return dict(id=id or uid(), answer=draft['high_score_answer'],
                     model_self_check=draft.get('high_score_self_check'),
                     layout_check=check_paper(draft['high_score_answer'],q['paper_spec']),
-                    direction=direction, created_at=created_at or now())
+                    direction=direction, created_at=created_at or now(),
+                    **({'style_check':style} if (style:=check_reference_style(draft['high_score_answer'],q)) else {}))
     def references(self, a, grade):
         if grade.get('references'):
             return grade['references']
         q = model_question(a['question_snapshot'])
         return [self.reference(grade['result'],q,id='original',created_at=a['created_at'])]
     async def repair_reference(self, provider, q, reference):
-        if reference['layout_check']['valid']:
+        if not needs_reference_repair(reference):
             return None
         try:
-            raw = await self.ask(provider, '范文校正。'+QUESTION_FIRST+'只重写高分参考答案，不重新批改用户作答。返回 {high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。先自行逐字计数并计算25格纸面占用，再返回纯文本范文。格式仅按本题题干所需设置，不强加标题、称呼、落款或日期，用全角空格表示必要缩进和对齐，不使用Markdown，不在范文末尾附字数说明。必须同时满足字数上下限和答题纸行数；消除多余空行，不能靠省略必要格式作弊。', {'question':q,'previous_answer':reference['answer'],'actual_check':reference['layout_check']})
+            raw = await self.ask(provider, '范文校正。'+QUESTION_FIRST+'只重写高分参考答案，不重新批改用户作答。返回 {high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。先自行逐字计数并计算25格纸面占用，再返回纯文本范文。格式仅按本题题干所需设置，不强加标题、称呼、落款或日期，用全角空格表示必要缩进和对齐，不使用Markdown，不在范文末尾附字数说明。必须同时满足字数上下限和答题纸行数；消除多余空行，不能靠省略必要格式作弊。'+reference_policy(q), {'question':q,'previous_answer':reference['answer'],'actual_check':reference['layout_check'], **({'style_check':reference['style_check']} if reference.get('style_check') else {})})
             draft = ReferenceDraft.model_validate(raw).model_dump()
             return self.reference(draft,q,direction='auto_repair')
         except Exception as exc:
@@ -149,8 +151,12 @@ class Service:
             words = previous['layout_check']['word_count']
             ceiling = spec['word_max'] or spec['cells']
             target = min(ceiling,max(words+max(20,round(words*.15)),spec['word_min'])) if direction=='more' else max(spec['word_min'],min(ceiling,round(words*.82)))
+            if direction=='rewrite':
+                target=max(spec['word_min'],min(ceiling,words))
             task = '单独重写高分范文。用户认为上版字数少了，请适度补充有效要点与论证。' if direction=='more' else '单独重写高分范文。用户认为上版字数多了，请压缩冗余、合并不必要换行。'
-            raw = await self.ask(provider, task+QUESTION_FIRST+'只返回 {high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}，不重新评分、不输出对用户原答的批改。范文文体及格式只依本题任务，不强加题干未要求的标题、称呼、落款与日期，必要缩进使用实际全角空格；先逐字和逐行自检，必须同时满足字数与25格答题纸行数。返回纯文本，禁止Markdown及范文内的字数说明。', {'question':q,'previous_answer':previous['answer'],'previous_check':previous['layout_check'],'target_word_count':target,'direction':direction})
+            if direction=='rewrite':
+                task='单独重写高分范文。按本题当前范文要求重新生成，字数以原题和纸面限制为准。'
+            raw = await self.ask(provider, task+QUESTION_FIRST+'只返回 {high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}，不重新评分、不输出对用户原答的批改。范文文体及格式只依本题任务，不强加题干未要求的标题、称呼、落款与日期，必要缩进使用实际全角空格；先逐字和逐行自检，必须同时满足字数与25格答题纸行数。返回纯文本，禁止Markdown及范文内的字数说明。'+reference_policy(q), {'question':q,'previous_answer':previous['answer'],'previous_check':previous['layout_check'],'target_word_count':target,'direction':direction})
             candidate = self.reference(ReferenceDraft.model_validate(raw).model_dump(),q,direction)
             versions.append(candidate)
             repaired = await self.repair_reference(provider,q,candidate)
@@ -200,7 +206,7 @@ class Service:
                 # Never silently substitute a different model into an existing attempt.
                 if (p['model'], p['base_url'], p['protocol']) != (snapshot['model'], snapshot['base_url'], snapshot['protocol']):
                     raise ModelError('模型配置已改变，请新建作答；不能将新模型混入旧批改')
-                raw = await self.ask(p, '独立批改。审题分析与评语简明、去重，不复述大段材料；各列表通常2–4条，证据只摘必要短句，范文仍必须满足题干字数下限。审题分析task_analysis中，task为本题任务，genre为本题所需文体（无固定文体则明确说明），requirements逐条摘录或忠实概述题干要求，material_basis引用本题材料并说明对应要点。返回单个JSON对象 {task_analysis:{task,genre,requirements,material_basis},score,dimensions,strengths,weaknesses,suggestions,evidence,high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。score 是本题训练满分内分数；dimensions 为六个指定维度各0–100。dimensions必须是六个指定中文名称为键、0–100数字为值的对象，不要嵌套说明；strengths、weaknesses、suggestions、evidence必须为字符串数组，前三项无内容可返回空数组，evidence须提供具体评分证据；high_score_answer必须为完整纯文本字符串；high_score_self_check 为前述自检对象；evidence 必须引用原答案并解释扣分。范文须自行逐字计数、自检文体格式与25格答题纸占用行数（paper_spec），同时满足两项上限。标题、称呼、落款、日期均计字，空格和换行损失占格；用实际全角空格表示缩进和对齐，范文纯文本，不要Markdown或字数说明。'+QUESTION_FIRST, {'full_score':full, 'dimensions':DIMENSIONS, 'rubric': TASK_RUBRIC, 'grading_policy': GRADING_POLICY, 'calibration':'优秀应满足题目核心要求且有充分材料或论证支撑；指出缺失与具体扣分理由，不因语言华丽忽略离题。自行拟定评分细则并保持一致；这不是官方阅卷。', 'question':q, 'answer':a['answer'], 'answer_layout':check_paper(a['answer'],q['paper_spec'])}, on_start=lambda:progress(g,'requesting'))
+                raw = await self.ask(p, '独立批改。审题分析与评语简明、去重，不复述大段材料；各列表通常2–4条，证据只摘必要短句，范文仍必须满足题干字数下限。审题分析task_analysis中，task为本题任务，genre为本题所需文体（无固定文体则明确说明），requirements逐条摘录或忠实概述题干要求，material_basis引用本题材料并说明对应要点。返回单个JSON对象 {task_analysis:{task,genre,requirements,material_basis},score,dimensions,strengths,weaknesses,suggestions,evidence,high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。score 是本题训练满分内分数；dimensions 为六个指定维度各0–100。dimensions必须是六个指定中文名称为键、0–100数字为值的对象，不要嵌套说明；strengths、weaknesses、suggestions、evidence必须为字符串数组，前三项无内容可返回空数组，evidence须提供具体评分证据；high_score_answer必须为完整纯文本字符串；high_score_self_check 为前述自检对象；evidence 必须引用原答案并解释扣分。范文须自行逐字计数、自检文体格式与25格答题纸占用行数（paper_spec），同时满足两项上限。标题、称呼、落款、日期均计字，空格和换行损失占格；用实际全角空格表示缩进和对齐，范文纯文本，不要Markdown或字数说明。'+QUESTION_FIRST+reference_policy(q), {'full_score':full, 'dimensions':DIMENSIONS, 'rubric': TASK_RUBRIC, 'grading_policy': GRADING_POLICY, 'calibration':'优秀应满足题目核心要求且有充分材料或论证支撑；指出缺失与具体扣分理由，不因语言华丽忽略离题。自行拟定评分细则并保持一致；这不是官方阅卷。', 'question':q, 'answer':a['answer'], 'answer_layout':check_paper(a['answer'],q['paper_spec'])}, on_start=lambda:progress(g,'requesting'))
                 g['response_received_at']=now()
                 if getattr(raw,'usage',None):g['usage']=raw.usage
                 progress(g,'validating')
@@ -212,7 +218,7 @@ class Service:
                 g['references'] = [original_reference]
                 g['grading_completed_at']=now();g['finished_at']=g['grading_completed_at']
                 progress(g,'completed')
-                if not original_reference['layout_check']['valid']:
+                if needs_reference_repair(original_reference):
                     g.pop('finished_at',None);progress(g,'reference_repair')
                     repair_tasks.append(asyncio.create_task(repair_for_grade(p,g,original_reference)))
             except Exception as exc:

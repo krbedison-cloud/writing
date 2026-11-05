@@ -90,7 +90,7 @@ class ReferenceDraft(BaseModel):
 
 class RegenerateInput(BaseModel):
     provider_id: str
-    direction: Literal["more", "less"]
+    direction: Literal["more", "less", "rewrite"]
     reference_id: str = "original"
 
 class HighlightInput(BaseModel):

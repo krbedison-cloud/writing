@@ -190,6 +190,56 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.client.post(path,json=data).status_code,409)
         self.client.delete('/api/highlights/'+h['id'])
         self.assertEqual(self.client.get(path).json()['outdated_count'],0)
+    def test_short_comment_policy_applies_to_initial_repair_and_both_rewrites(self):
+        from test_reference_policy import COMMENT
+        from app.reference_policy import SHORT_COMMENT_POLICY
+        async def comment_model(provider,task,data):
+            if task.startswith('独立批改') and '短评' in data['question']['prompt']:
+                result=grade(26);result['high_score_answer']='当地1000家企业加强创新，提高产品质量，为发展注入动力。'
+                return result
+            if task.startswith(('范文校正','单独重写高分范文')):
+                return {'high_score_answer':COMMENT}
+            return await fake_model(provider,task,data)
+        p=self.make_paper()
+        with patch('app.service.call_model',side_effect=comment_model) as mock:
+            a=self.submit(p,1)
+            self.assertEqual(a['status'],'completed')
+            g=a['grades'][0];self.assertEqual(g['result']['score'],26)
+            self.assertTrue(g['references'][0]['layout_check']['valid'])
+            self.assertFalse(g['references'][0]['style_check']['valid'])
+            self.assertEqual(g['references'][-1]['answer'],COMMENT)
+            self.assertTrue(g['references'][-1]['style_check']['valid'])
+            for direction in ('more','less','rewrite'):
+                source=self.client.get('/api/attempts/'+a['id']).json()['grades'][0]['references'][-1]['id']
+                j=self.client.post('/api/attempts/'+a['id']+'/references',json={'provider_id':self.master,'direction':direction,'reference_id':source}).json()
+                self.assertEqual(self.wait_job(j['id'])['status'],'completed')
+            relevant=[c for c in mock.call_args_list if c.args[1].startswith(('独立批改','范文校正','单独重写高分范文'))]
+            self.assertEqual(len(relevant),5)
+            for call in relevant:
+                self.assertIn(SHORT_COMMENT_POLICY,call.args[1])
+                self.assertEqual(call.args[2]['question']['materials'],p['questions'][1]['materials'])
+            self.assertNotIn(SHORT_COMMENT_POLICY,next(c.args[1] for c in mock.call_args_list if c.args[1].startswith('汇总')))
+        updated=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(updated['answer'],a['answer'])
+        self.assertEqual(updated['mean_score'],a['mean_score'])
+        self.assertEqual(updated['grades'][0]['result'],g['result'])
+        self.assertTrue(updated['grades'][0]['references'][-1]['style_check']['valid'])
+
+    def test_short_comment_failed_style_repair_is_bounded_and_keeps_score(self):
+        bad='当地1000家企业加强创新，提高产品质量，为发展注入动力。'
+        async def invalid_comment(provider,task,data):
+            if task.startswith('独立批改'):
+                result=grade(26);result['high_score_answer']=bad;return result
+            if task.startswith('范文校正'):return {'high_score_answer':bad}
+            return await fake_model(provider,task,data)
+        p=self.make_paper()
+        with patch('app.service.call_model',side_effect=invalid_comment) as mock:
+            a=self.submit(p,1)
+        self.assertEqual(a['status'],'completed');self.assertEqual(a['mean_score'],26)
+        self.assertEqual(len(a['grades'][0]['references']),2)
+        self.assertFalse(a['grades'][0]['references'][-1]['style_check']['valid'])
+        self.assertEqual(sum(c.args[1].startswith('范文校正') for c in mock.call_args_list),1)
+
     def test_reference_regeneration_keeps_scores_answers_and_old_versions(self):
         p=self.make_paper();a=self.submit(p)
         original=a['grades'][0]['result']['high_score_answer'];signature=self.client.get('/api/profile').json()['signature']
