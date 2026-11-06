@@ -68,6 +68,13 @@ class AttemptInput(BaseModel):
 
 class RetryInput(BaseModel):
     provider_id: str | None = None
+    replacement_provider_id: str | None = Field(default=None, min_length=1, max_length=100)
+    master_id: str | None = Field(default=None, min_length=1, max_length=100)
+    @model_validator(mode="after")
+    def replacement_target(self):
+        if self.replacement_provider_id and not self.provider_id:
+            raise ValueError('更换接口时必须指定要替换的失败项')
+        return self
 
 class ReferenceSelfCheck(BaseModel):
     word_count: int = Field(ge=0, le=20000)

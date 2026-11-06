@@ -171,6 +171,44 @@ class Service:
             self.finish(j)
         except Exception as exc:
             self.finish(j,public_error(exc))
+    def prepare_retry(self, a, value):
+        """Refresh only requested failed slots, preserving completed model attribution."""
+        safe = lambda p: {k:v for k,v in p.items() if k not in ('api_key','has_key')}
+        failed = [p['id'] for p in a['providers'] if not any(g['provider_id']==p['id'] and g['status']=='completed' for g in a['grades'])]
+        if value.provider_id is not None:
+            if not any(p['id']==value.provider_id for p in a['providers']):
+                raise ModelError('该教练未参与本次作答')
+            if value.provider_id not in failed:
+                raise ModelError('该教练已成功，无需重试')
+        targets = [value.provider_id] if value.provider_id else [] if value.master_id else failed
+        if value.replacement_provider_id and any(p['id']==value.replacement_provider_id and p['id']!=value.provider_id for p in a['providers']):
+            raise ModelError('该接口已在本次批改中，请选择其他接口，避免重复计分')
+        events = []
+        retry_ids = []
+        master_id = value.master_id or a['master']['id']
+        for old_id in targets:
+            old = next(p for p in a['providers'] if p['id']==old_id)
+            replacement = safe(self.provider(value.replacement_provider_id or old_id))
+            old_grade = next((g for g in a['grades'] if g['provider_id']==old_id), None)
+            events.append(dict(role='coach',at=now(),previous=old,replacement=replacement,failed_grade=old_grade))
+            a['providers'] = [replacement if p['id']==old_id else p for p in a['providers']]
+            a['grades'] = [g for g in a['grades'] if g['provider_id']!=old_id]
+            retry_ids.append(replacement['id'])
+            if a['master']['id']==old_id and not value.master_id:
+                master_id = replacement['id']
+        # Explicit retry uses the current master configuration as well. Successful
+        # coach snapshots remain untouched even if they share this configuration ID.
+        master = self.db.provider(master_id, private=False)
+        if value.master_id and not master:
+            raise ModelError('所选汇总接口已删除，请重新选择')
+        if master:
+            master = safe(master)
+            if master != a['master']:
+                events.append(dict(role='master',at=now(),previous=a['master'],replacement=master,error=a.get('error')))
+                a['master'] = master
+        a.setdefault('retry_history',[]).extend(events)
+        a.update(status='queued',retry_provider_ids=retry_ids,synthesis=None,error=None)
+        return retry_ids
     async def grade(self, j, attempt_id, provider_ids=None):
         a = self.db.get('attempts', attempt_id)
         a.update(status='running', error=None, grading_policy=GRADING_POLICY, grading_stage='各教练批改中', summary_status='pending')
@@ -205,7 +243,7 @@ class Service:
                 p = self.provider(pid)
                 # Never silently substitute a different model into an existing attempt.
                 if (p['model'], p['base_url'], p['protocol']) != (snapshot['model'], snapshot['base_url'], snapshot['protocol']):
-                    raise ModelError('模型配置已改变，请新建作答；不能将新模型混入旧批改')
+                    raise ModelError('接口配置已更新，请对该失败项单独重试以使用当前配置')
                 raw = await self.ask(p, '独立批改。审题分析与评语简明、去重，不复述大段材料；各列表通常2–4条，证据只摘必要短句，范文仍必须满足题干字数下限。审题分析task_analysis中，task为本题任务，genre为本题所需文体（无固定文体则明确说明），requirements逐条摘录或忠实概述题干要求，material_basis引用本题材料并说明对应要点。返回单个JSON对象 {task_analysis:{task,genre,requirements,material_basis},score,dimensions,strengths,weaknesses,suggestions,evidence,high_score_answer,high_score_self_check:{word_count,used_rows,complies,format_note}}。score 是本题训练满分内分数；dimensions 为六个指定维度各0–100。dimensions必须是六个指定中文名称为键、0–100数字为值的对象，不要嵌套说明；strengths、weaknesses、suggestions、evidence必须为字符串数组，前三项无内容可返回空数组，evidence须提供具体评分证据；high_score_answer必须为完整纯文本字符串；high_score_self_check 为前述自检对象；evidence 必须引用原答案并解释扣分。范文须自行逐字计数、自检文体格式与25格答题纸占用行数（paper_spec），同时满足两项上限。标题、称呼、落款、日期均计字，空格和换行损失占格；用实际全角空格表示缩进和对齐，范文纯文本，不要Markdown或字数说明。'+QUESTION_FIRST+reference_policy(q), {'full_score':full, 'dimensions':DIMENSIONS, 'rubric': TASK_RUBRIC, 'grading_policy': GRADING_POLICY, 'calibration':'优秀应满足题目核心要求且有充分材料或论证支撑；指出缺失与具体扣分理由，不因语言华丽忽略离题。自行拟定评分细则并保持一致；这不是官方阅卷。', 'question':q, 'answer':a['answer'], 'answer_layout':check_paper(a['answer'],q['paper_spec'])}, on_start=lambda:progress(g,'requesting'))
                 g['response_received_at']=now()
                 if getattr(raw,'usage',None):g['usage']=raw.usage
@@ -240,7 +278,7 @@ class Service:
                 try:
                     master=self.provider(a['master']['id'])
                     if any(master[k]!=a['master'][k] for k in ('model','base_url','protocol')):
-                        raise ModelError('主模型配置已改变，请恢复原配置或重新提交')
+                        raise ModelError('汇总接口配置已更新，请重试汇总或更换汇总接口')
                     raw = await self.ask(master, '汇总多位教练的批改，先以本题题干、材料和用户原答核验每位教练的审题与扣分依据；若有文体误判、强加格式或引用无关材料，须明确指出并排除其诊断影响，不把错误当共识。返回 {analysis,consensus,disagreements,action_plan}。analysis用300–600字给出关键诊断，其余为字符串数组。consensus和disagreements各最多5条，action_plan最多5条，每条只给一个具体动作，优先级从高到低，避免重复。识别共识和分歧，检验批评是否有原文证据，不盲信多数。均分已由程序计算，不改分。优先给出下一次能执行的修改动作。', {'question':q,'answer':a['answer'],'answer_layout':check_paper(a['answer'],q['paper_spec']),'mean_score':a['mean_score'],'successful_count':len(good),'requested_count':len(a['providers']),'reviews':[{k:g[k] for k in ('provider_id','name','model','status')} | {'result':{k:v for k,v in g['result'].items() if k not in ('high_score_answer','high_score_self_check')}} for g in good]})
                     a['synthesis']=Synthesis.model_validate(raw).model_dump();a['summary_status']='completed'
                 except Exception as exc:

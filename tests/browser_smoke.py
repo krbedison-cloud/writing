@@ -31,6 +31,9 @@ class MockModel(BaseHTTPRequestHandler):
     def do_POST(self):
         body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         data=json.loads(body['messages'][-1]['content']);task=data['task'];payload=data['data'];model=body['model']
+        if model=='coach-exhausted':
+            if task.startswith('独立批改'):counts[model]=counts.get(model,0)+1
+            self.send_response(402);self.end_headers();self.wfile.write(b'quota exhausted');return
         if task.startswith('独立批改'):
             if model=='coach-c':time.sleep(13)
             assert (SHORT_COMMENT_POLICY in task)==is_short_comment(payload['question'])
@@ -539,10 +542,71 @@ def main():
                 legacy=page.evaluate("()=>{const a=structuredClone(state.attempt);a.grades.forEach(g=>delete g.stage);return coachScoreCard(a,a.providers[0],false);}")
                 assert '已完成' in legacy and '未完成' not in legacy
                 page.screenshot(path='/tmp/shenlun-token-progress-tested.png',full_page=True)
+                # Editing a failed interface in place must refresh its snapshot on targeted retry.
+                def api_provider(name,model):
+                    return httpx.post(base+'/api/providers',json=dict(name=name,protocol='openai',base_url=f'http://127.0.0.1:{mock.server_port}/v1',model=model,api_key='mock-only')).json()
+                def wait_attempt(attempt_id):
+                    for _ in range(100):
+                        current=httpx.get(base+'/api/attempts/'+attempt_id).json()
+                        if current['status'] not in ('queued','running'):return current
+                        time.sleep(.1)
+                    raise AssertionError('replacement attempt did not finish')
+                exhausted=api_provider('额度已用完','coach-exhausted')
+                first=httpx.post(base+'/api/attempts',json=dict(question_id=expected['questions'][0]['id'],answer='测试接口更换后保留原答案。',provider_ids=[providers[0]['id'],exhausted['id']],master_id=providers[0]['id'])).json()
+                old=wait_attempt(first['attempt_id']);assert old['status']=='partial'
+                kept=next(g for g in old['grades'] if g['provider_id']==providers[0]['id'])
+                page.goto(base+'/#models')
+                page.locator('[data-action="edit-model"][data-id="'+exhausted['id']+'"]').click()
+                page.locator('[name="name"]').fill('更新后的接口');page.locator('[name="model"]').fill('coach-updated')
+                page.locator('#model-form button[type="submit"]').click();expect(page.locator('#editor')).not_to_be_visible()
+                page.goto(base+'/#attempt/'+first['attempt_id'])
+                expect(page.get_by_text('当前接口已更新为',exact=False)).to_be_visible()
+                before=counts['coach-a']
+                page.locator('[data-action="retry-coach"][data-provider="'+exhausted['id']+'"]').click()
+                expect(page.locator('[data-action="review-tab"]')).to_have_count(2,timeout=15000)
+                changed=wait_attempt(first['attempt_id']);assert changed['status']=='completed'
+                assert counts['coach-a']==before and counts['coach-updated']==1
+                assert next(g for g in changed['grades'] if g['provider_id']==providers[0]['id'])==kept
+                assert next(g for g in changed['grades'] if g['provider_id']==exhausted['id'])['model']=='coach-updated'
+                # A deleted failed interface may be replaced by a different configuration, including its master role.
+                deleted=api_provider('已删除的额度接口','coach-exhausted');replacement=api_provider('新的补批接口','coach-replacement')
+                second=httpx.post(base+'/api/attempts',json=dict(question_id=expected['questions'][0]['id'],answer='测试删除旧接口后单独补批。',provider_ids=[providers[0]['id'],deleted['id']],master_id=deleted['id'])).json()
+                old=wait_attempt(second['attempt_id']);assert old['status']=='summary_failed'
+                kept=next(g for g in old['grades'] if g['provider_id']==providers[0]['id'])
+                httpx.delete(base+'/api/providers/'+deleted['id'])
+                page.goto(base+'/#attempt/'+second['attempt_id'])
+                page.locator('[data-action="replace-coach"][data-provider="'+deleted['id']+'"]').click()
+                expect(page.locator('#retry-form')).to_be_visible()
+                assert page.locator('#retry-form option[value="'+providers[0]['id']+'"]').count()==0
+                page.locator('#retry-form [name="replacement"]').select_option(replacement['id'])
+                before=counts['coach-a']
+                with page.expect_request(lambda r:r.method=='POST' and r.url.endswith('/retry')) as sent:
+                    page.locator('#retry-form button[type="submit"]').click()
+                assert sent.value.post_data_json=={'provider_id':deleted['id'],'replacement_provider_id':replacement['id']}
+                expect(page.locator('#editor')).not_to_be_visible()
+                expect(page.locator('[data-action="review-tab"]')).to_have_count(2,timeout=15000)
+                changed=wait_attempt(second['attempt_id']);assert changed['status']=='completed'
+                assert changed['master']['id']==replacement['id'] and counts['coach-a']==before
+                assert next(g for g in changed['grades'] if g['provider_id']==providers[0]['id'])==kept
+                assert any(e['previous']['id']==deleted['id'] for e in changed['retry_history'])
+                # A master-only quota failure can be reassigned without any coaching requests.
+                summary_only=api_provider('汇总额度不足','coach-exhausted')
+                third=httpx.post(base+'/api/attempts',json=dict(question_id=expected['questions'][0]['id'],answer='测试只更换汇总接口。',provider_ids=[providers[0]['id']],master_id=summary_only['id'])).json()
+                old=wait_attempt(third['attempt_id']);assert old['status']=='summary_failed'
+                page.goto(base+'/#attempt/'+third['attempt_id'])
+                page.locator('[data-action="replace-master"]').click()
+                page.locator('#retry-form [name="replacement"]').select_option(replacement['id'])
+                before=counts['coach-a']
+                page.locator('#retry-form button[type="submit"]').click()
+                expect(page.locator('#editor')).not_to_be_visible()
+                changed=wait_attempt(third['attempt_id']);assert changed['status']=='completed'
+                assert changed['grades']==old['grades'] and counts['coach-a']==before
+                page.reload();expect(page.locator('[data-action="replace-master"]')).to_have_count(0)
+                expect(page.get_by_text('重试与接口更换记录',exact=True)).to_be_visible()
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()
-            print('PASS: staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: edited failed interface retry, deleted-interface replacement and master reassignment, master-only recovery without regrading, staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)

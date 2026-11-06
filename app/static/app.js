@@ -153,10 +153,10 @@ function renderAttempt(a){
  return '<div id="attempt-progress">'+head('这一次，离更好的自己近一点',sourceText(q.source)+' · 第 '+q.number+' 题 · '+date(a.created_at),`<a class="btn" href="#history">返回历史</a>${!busy&&a.status!=='completed'?btn('retry',a.status==='summary_failed'&&good.length===a.providers.length?'重试汇总':'重试失败项','primary'):''}`,'REVIEW & REFLECTION')+
  (busy?'<div class="notice"><span class="busy-dot"></span>'+esc(a.grading_stage||'各教练批改中')+'。已返回的评分可先阅读。你可以离开此页，后台继续执行。</div>':'')+
  (!a.grading_policy||a.grades.some(g=>g.status==='completed'&&!g.grading_policy)?'<div class="notice warn">此记录使用旧版批改提示。若评价与题干不符，可保留本记录，并回原题使用原答案重新提交批改。</div>':'')+
- (a.error?`<div class="notice error">${esc(a.error)}</div>`:'')+
+ (a.error?`<div class="notice error">${esc(a.error)}</div>`:'')+retryHistory(a)+
  `<div class="score-cards"><div class="score-card"><p>有效批改均分</p><div class="score">${a.mean_score??'—'}<small> / ${full[q.kind]}</small></div><span class="tiny muted">${good.length} / ${a.providers.length} 个模型成功 · 分差 ${a.score_spread??'—'}</span></div>${a.providers.map(p=>coachScoreCard(a,p,busy)).join('')}</div>`+
  (a.status==='partial'?'<div class="notice warn">仅成功模型参与均分。失败项未被算作零分；可重试失败项，成功项不会重复调用。</div>':'')+
- `</div><div class="grid-main"><div class="stack"><section class="card" id="attempt-synthesis"><div class="card-head"><h2>主模型 · 汇总诊断</h2>${badge(a.master.name)}</div>${a.synthesis?`<div class="prose">${esc(a.synthesis.analysis)}</div><div class="grade-section"><h3>教练们的共识</h3>${list(a.synthesis.consensus)}<h3>需要辨别的分歧</h3>${a.synthesis.disagreements.length?list(a.synthesis.disagreements):'<p class="small muted">本次未报告明显分歧。</p>'}<h3>下一次，就这样改</h3>${list(a.synthesis.action_plan)}</div>`:empty(busy?'诊断正在路上':'尚无汇总诊断',busy?'先认真写，再一起看清得失。':'请检查失败原因后重试。')}</section></div><section class="card"><div class="card-head"><h2>当时的原答案</h2>${badge(kinds[q.kind])}</div><div class="prose">${esc(a.answer)}</div><details class="plain-details"><summary>查看本次题干与材料快照</summary><div class="prose">${esc(q.prompt)}</div><h3 class="section-gap">${esc(q.material_scope?.note||'当时存档的材料')}</h3><div class="material reading-text">${readingText(q.materials)}</div></details><a class="btn small section-gap" href="#practice/${a.paper_id}/${a.question_id}">再练一次 ${icon('arrow')}</a></section></div>`+
+ `</div><div class="grid-main"><div class="stack"><section class="card" id="attempt-synthesis"><div class="card-head"><h2>主模型 · 汇总诊断</h2>${badge(a.master.name)} <span class="tiny muted">${esc(a.master.model)}</span></div>${!busy&&a.summary_status==='failed'?btn('replace-master','更换汇总接口','small section-gap'):''}${a.synthesis?`<div class="prose">${esc(a.synthesis.analysis)}</div><div class="grade-section"><h3>教练们的共识</h3>${list(a.synthesis.consensus)}<h3>需要辨别的分歧</h3>${a.synthesis.disagreements.length?list(a.synthesis.disagreements):'<p class="small muted">本次未报告明显分歧。</p>'}<h3>下一次，就这样改</h3>${list(a.synthesis.action_plan)}</div>`:empty(busy?'诊断正在路上':'尚无汇总诊断',busy?'先认真写，再一起看清得失。':'请检查失败原因后重试。')}</section></div><section class="card"><div class="card-head"><h2>当时的原答案</h2>${badge(kinds[q.kind])}</div><div class="prose">${esc(a.answer)}</div><details class="plain-details"><summary>查看本次题干与材料快照</summary><div class="prose">${esc(q.prompt)}</div><h3 class="section-gap">${esc(q.material_scope?.note||'当时存档的材料')}</h3><div class="material reading-text">${readingText(q.materials)}</div></details><a class="btn small section-gap" href="#practice/${a.paper_id}/${a.question_id}">再练一次 ${icon('arrow')}</a></section></div>`+
  `<section class="card section-gap"><div class="card-head"><h2>每位教练的详细批改与参考范文</h2><span class="subtitle">AI 生成 · 非官方标准答案</span></div><div id="review-tabs" class="tabs">${good.map(g=>`<button data-action="review-tab" data-id="${g.provider_id}" class="${g.provider_id===activeReview?.provider_id?'active':''}">${esc(g.name)} · ${g.result.score} 分</button>`).join('')}</div><div id="review-body">${activeReview?reviewBody(activeReview):empty('等待第一份批改结果','各模型的评分、证据与范文会在这里分别呈现。')}</div></section>`;
 }
 const coachStages={queued:'排队等待接口',requesting:'批改请求中',validating:'校验评分',reference_repair:'评分已返回 · 范文校正中',completed:'已完成',failed:'失败',interrupted:'已中断'};
@@ -168,19 +168,32 @@ function updateCoachClocks(){
  });
 }
 setInterval(updateCoachClocks,1000);
+function retryHistory(a){
+ if(!a.retry_history?.length||['queued','running'].includes(a.status))return '';
+ return `<details class="plain-details"><summary>重试与接口更换记录</summary>${a.retry_history.map(item=>`<p class="small">${esc(date(item.at))} · ${item.role==='master'?'汇总接口':'失败批改项'}：${esc(item.previous.name)}（${esc(item.previous.model)}） → ${esc(item.replacement.name)}（${esc(item.replacement.model)}）${item.failed_grade?.error?'<br>'+esc('上次失败：'+item.failed_grade.error):''}</p>`).join('')}</details>`;
+}
+async function retryEditor(providerId=null){
+ state.providers=await api('/providers');
+ state.retryProvider=providerId;state.retryAttemptId=state.attempt.id;
+ const a=state.attempt, old=providerId?a.providers.find(p=>p.id===providerId):a.master;
+ const choices=state.providers.filter(p=>!providerId||!a.providers.some(other=>other.id===p.id&&other.id!==providerId));
+ const preferred=choices.find(p=>p.id!==old.id)||choices[0];
+ showDialog(`<div class="dialog-head"><h2>${providerId?'更换接口并补批':'更换汇总接口'}</h2>${btn('close-dialog',icon('close'),'small','aria-label="关闭"')}</div><p>原接口：${esc(old.name)} · ${esc(old.model)}</p><p class="small section-gap">${providerId?'仅补批这一项，原答案和其他成功评分保留。结果将标注实际使用的新模型。':'只重新生成汇总，不重复调用已完成的批改模型。'}${providerId&&a.master.id===providerId?' 原接口也负责汇总，将一并使用新接口。':''}</p>${choices.length?`<form id="retry-form"><label class="field section-gap">${providerId?'补批接口':'汇总接口'}<select name="replacement" required>${choices.map(p=>option(p.id,p.name+' · '+p.model,p.id===preferred?.id)).join('')}</select></label><button type="submit" class="btn primary section-gap">${providerId?'开始单独补批':'重新汇总'}</button></form>`:`<p class="notice section-gap">暂无可替换的接口，请先添加新的模型接口。</p>${btn('retry-add-model','前往模型设置','primary')}`}`);
+}
 function coachScoreCard(a,p,busy){
  const g=a.grades.find(g=>g.provider_id===p.id),completed=g?.status==='completed';
  const retrying=busy&&(a.retry_provider_ids||[]).includes(p.id);
  const retryable=!completed&&(!busy||g?.status==='failed'||retrying);
  const status=coachStages[g?.stage]||(completed?'已完成':retrying?'正在重试':g?.status==='failed'?'失败':busy?'等待中':'未完成');
  const config=state.providers.find(item=>item.id===p.id)||p;
+ const reconfigured=!completed&&state.providers.some(item=>item.id===p.id)&&['name','model','protocol','base_url'].some(key=>config[key]!==p[key]);
  const currentLimit=config.max_tokens||6000;
  const suggested=[32768,65536,131072].find(value=>value>currentLimit&&value>=Math.min(131072,Math.max(32768,currentLimit*2)));
  const truncated=g?.error_code==='output_truncated'||g?.error?.includes('输出被截断');
  const response=g?.request_started_at&&g?.response_received_at?'<p class="tiny muted">批改响应 '+duration((Date.parse(g.response_received_at)-Date.parse(g.request_started_at))/1000)+'</p>':'';
  const clock=g?.stage_started_at?`<p class="tiny muted" data-clock-start="${esc(g.finished_at?(g.queued_at||g.stage_started_at):g.stage_started_at)}" data-clock-end="${esc(g.finished_at||'')}"></p>`:'';
  const usage=g?.usage?.output_tokens!=null?`<p class="tiny muted">初评接口输出 ${g.usage.output_tokens} tokens${g.usage.reasoning_tokens!=null?' · 思考 '+g.usage.reasoning_tokens+' tokens':''}</p>`:'';
- return `<div class="score-card" data-provider="${esc(p.id)}"><p>${esc(p.name)}</p>${completed?`<div class="score">${g.result.score}<small> / ${full[a.question_snapshot.kind]}</small></div>`:''}${badge(status,g?.status==='failed'&&!retrying?'red':'blue')}${clock}${response}${usage}<span class="tiny muted">${esc(p.model)}</span>${g?.error&&!retrying?`<p class="small">${esc(g.error)}</p>`:''}${retryable?`<div class="section-gap"><button type="button" class="btn small" data-action="retry-coach" data-provider="${esc(p.id)}" ${busy?'disabled title="本次任务仍在执行，完成后可单独重试"':''}>${retrying?'正在重试':busy?'稍后重试':'单独重试'}</button>${busy&&!retrying?'<p class="tiny muted">本次任务完成后可重试</p>':''}${truncated&&suggested?`<button type="button" class="btn small section-gap" data-action="boost-retry" data-provider="${esc(p.id)}" data-limit="${suggested}" ${busy?'disabled':''}>提高至 ${suggested} 并重试</button><p class="tiny muted">请确认服务商支持此输出上限</p>`:''}</div>`:''}</div>`;
+ return `<div class="score-card" data-provider="${esc(p.id)}"><p>${esc(p.name)}</p>${completed?`<div class="score">${g.result.score}<small> / ${full[a.question_snapshot.kind]}</small></div>`:''}${badge(status,g?.status==='failed'&&!retrying?'red':'blue')}${clock}${response}${usage}<span class="tiny muted">${esc(p.model)}</span>${reconfigured?`<p class="small">当前接口已更新为 ${esc(config.name)} · ${esc(config.model)}，单独重试将使用此配置。</p>`:''}${g?.error&&!retrying?`<p class="small">${esc(g.error)}</p>`:''}${retryable?`<div class="section-gap"><button type="button" class="btn small" data-action="retry-coach" data-provider="${esc(p.id)}" ${busy?'disabled title="本次任务仍在执行，完成后可单独重试"':''}>${retrying?'正在重试':busy?'稍后重试':'单独重试'}</button><button type="button" class="btn small section-gap" data-action="replace-coach" data-provider="${esc(p.id)}" ${busy?'disabled':''}>更换接口重试</button>${busy&&!retrying?'<p class="tiny muted">本次任务完成后可重试</p>':''}${truncated&&suggested?`<button type="button" class="btn small section-gap" data-action="boost-retry" data-provider="${esc(p.id)}" data-limit="${suggested}" ${busy?'disabled':''}>提高至 ${suggested} 并重试</button><p class="tiny muted">请确认服务商支持此输出上限</p>`:''}</div>`:''}</div>`;
 }
 function reviewBody(g){const r=g.result;return `<div class="row between wrap"><h3>${esc(g.name)} <span class="tiny muted">${esc(g.model)}</span></h3><span class="tiny muted">范文来自此模型，未由主模型改写</span></div>${r.task_analysis?`<div class="paper-check section-gap"><h3>本题审题 · ${esc(r.task_analysis.genre)}</h3><p>${esc(r.task_analysis.task)}</p><h4>题干要求</h4>${list(r.task_analysis.requirements)}<h4>本题材料依据</h4>${list(r.task_analysis.material_basis)}</div>`:'<p class="paper-hint section-gap">模型未提供有效审题分析，请结合题干与评分证据核对。</p>'}<div class="row wrap section-gap">${dimensions.map(k=>badge(k+' '+r.dimensions[k])).join(' ')}</div><div class="grid-main grade-section"><div><h3>值得保持</h3>${list(r.strengths)}<h3>不足与扣分依据</h3>${list(r.weaknesses)}${list(r.evidence)}</div><div><h3>具体改法</h3>${list(r.suggestions)}</div></div>${referenceBody(g)}`;}
 function referenceBody(g){
@@ -308,6 +321,9 @@ async function act(el){const action=el.dataset.action;
   state.providers=state.providers.map(item=>item.id===p.id?updated:item);
   await post('/attempts/'+state.attempt.id+'/retry',{provider_id:p.id});toast('已提高输出上限并单独重试，其他评分保留');return refreshAttempt();
  }
+ if(action==='replace-coach')return retryEditor(el.dataset.provider);
+ if(action==='replace-master')return retryEditor();
+ if(action==='retry-add-model'){closeDialog();location.hash='models';return;}
  if(action==='retry-coach'){await post('/attempts/'+state.attempt.id+'/retry',{provider_id:el.dataset.provider});toast('开始重试这位教练，其他已成功结果保留');return refreshAttempt();}
  if(action==='retry'){await post('/attempts/'+state.attempt.id+'/retry');toast('开始重试失败项');return refreshAttempt();}
  if(action==='refresh-profile'){
@@ -323,11 +339,14 @@ document.addEventListener('click',async event=>{
  try{await act(el)}catch(e){toast(e.message)}finally{el.disabled=false;}
 });
 document.addEventListener('submit',async event=>{
- const form=event.target;if(!['answer-form','model-form','paper-form'].includes(form.id))return;
+ const form=event.target;if(!['answer-form','model-form','paper-form','retry-form'].includes(form.id))return;
  event.preventDefault();const submit=$('button[type="submit"]',form);if(submit.disabled)return;submit.disabled=true;
  try{
   const f=new FormData(form),v=Object.fromEntries(f);
-  if(form.id==='model-form'){
+  if(form.id==='retry-form'){
+   const body=state.retryProvider?{provider_id:state.retryProvider,replacement_provider_id:v.replacement}:{master_id:v.replacement};
+   await post('/attempts/'+state.retryAttemptId+'/retry',body);closeDialog();toast(state.retryProvider?'已开始单独补批，其他成功评分保留':'已开始重新汇总');await refreshAttempt();
+  }else if(form.id==='model-form'){
    v.max_tokens=Number(v.max_tokens);v.timeout_seconds=Number(v.timeout_seconds);await api('/providers'+(state.editProvider?'/'+state.editProvider:''),{method:state.editProvider?'PUT':'POST',body:JSON.stringify(v)});closeDialog();toast('接口已保存');await route(true);
   }else if(form.id==='paper-form'){
    const questions=$$('.edit-q',form).map(q=>{const get=name=>$(`[name="${name}"]`,q).value;return {number:Number(get('number')),kind:get('kind'),word_min:Number(get('word_min')),word_max:Number(get('word_max')),paper_rows:Number(get('paper_rows')),prompt:get('prompt'),classification_note:get('classification_note')||'人工校对',material_mode:get('material_mode'),material_ids:$$('[name="material_id"]:checked',q).map(x=>Number(x.value)),custom_materials:get('custom_materials')};});

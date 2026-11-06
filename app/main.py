@@ -268,7 +268,7 @@ def create_app(data_dir=None):
         return {'attempt_id':id,'job_id':j['id']}
     @app.get('/api/attempts')
     def attempts():
-        return [{k:v for k,v in a.items() if k not in ('question_snapshot','grades','answer','synthesis')} | {'question_number':a['question_snapshot']['number'],'kind':a['question_snapshot']['kind'],'source':a['question_snapshot']['source'],'answer_length':len(a['answer'])} for a in db.all('attempts')]
+        return [{k:v for k,v in a.items() if k not in ('question_snapshot','grades','answer','synthesis','retry_history')} | {'question_number':a['question_snapshot']['number'],'kind':a['question_snapshot']['kind'],'source':a['question_snapshot']['source'],'answer_length':len(a['answer'])} for a in db.all('attempts')]
     @app.get('/api/attempts/{id}')
     def attempt(id: str):
         a = db.get('attempts', id)
@@ -306,18 +306,9 @@ def create_app(data_dir=None):
             raise HTTPException(409, '任务正在执行')
         if a['status'] == 'completed':
             raise HTTPException(400, '本次批改已全部成功，无需重试')
-        provider_id = value.provider_id if value else None
-        failed = [p['id'] for p in a['providers'] if not any(g['provider_id']==p['id'] and g['status']=='completed' for g in a['grades'])]
-        if provider_id is not None:
-            if not any(p['id']==provider_id for p in a['providers']):
-                raise HTTPException(400, '该教练未参与本次作答')
-            if provider_id not in failed:
-                raise HTTPException(400, '该教练已成功，无需重试')
-            service.provider(provider_id)
-        targets = [provider_id] if provider_id is not None else failed
-        a['status'] = 'queued'
-        a['retry_provider_ids'] = targets
-        a['synthesis'] = None
+        value = value or RetryInput()
+        targets = service.prepare_retry(a, value)
+        provider_id = targets[0] if value.provider_id else None
         db.put('attempts', id, a, a['created_at'])
         j = service.job('grading', id)
         if provider_id is not None:

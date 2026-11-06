@@ -397,6 +397,93 @@ class AppTests(unittest.TestCase):
             updated['status']='running';self.app.state.service.db.put('attempts',a['id'],updated,updated['created_at'])
             self.assertEqual(self.client.post(path,json={'provider_id':second['id']}).status_code,409)
 
+    def test_retry_uses_edited_failed_config_without_regrading_success(self):
+        p=self.make_paper();bad=self.add_model('bad')
+        a=self.submit(p,models=[self.master,bad['id']]);self.assertEqual(a['status'],'partial')
+        kept=next(g for g in a['grades'] if g['provider_id']==self.master)
+        changed=dict(bad,name='新教练',protocol='anthropic',base_url='https://replacement.example/v1',model='new-model',api_key='replacement-secret')
+        self.assertEqual(self.client.put('/api/providers/'+bad['id'],json=changed).status_code,200)
+        before=len(self.mock.call_args_list)
+        r=self.client.post('/api/attempts/'+a['id']+'/retry',json={'provider_id':bad['id']});self.assertEqual(r.status_code,200,r.text)
+        self.wait_job(r.json()['job_id'])
+        result=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(result['status'],'completed')
+        self.assertEqual(next(g for g in result['grades'] if g['provider_id']==self.master),kept)
+        new=next(g for g in result['grades'] if g['provider_id']==bad['id'])
+        self.assertEqual((new['name'],new['model']),('新教练','new-model'))
+        calls=[c for c in self.mock.call_args_list[before:] if c.args[1].startswith('独立批改')]
+        self.assertEqual(len(calls),1);self.assertEqual(calls[0].args[0]['protocol'],'anthropic')
+        self.assertEqual(calls[0].args[0]['base_url'],changed['base_url'])
+        self.assertEqual(result['retry_history'][0]['previous']['model'],'bad')
+        self.assertEqual(result['retry_history'][0]['failed_grade']['status'],'failed')
+        self.assertEqual(result['answer'],a['answer']);self.assertEqual(result['question_snapshot'],a['question_snapshot'])
+        exported=self.client.get('/api/export').text
+        self.assertNotIn('replacement-secret',exported);self.assertNotIn('secret-example',exported)
+
+    def test_replacement_after_deleted_failed_provider_also_replaces_master(self):
+        p=self.make_paper();bad=self.add_model('bad');replacement=self.add_model('other')
+        async def quota(provider,task,payload):
+            if provider['id']==bad['id']:raise ModelError('接口额度已用完')
+            return await fake_model(provider,task,payload)
+        with patch('app.service.call_model',side_effect=quota) as mock:
+            r=self.client.post('/api/attempts',json=dict(question_id=p['questions'][0]['id'],answer='测试原答案，围绕材料概括措施。',provider_ids=[self.master,bad['id']],master_id=bad['id'])).json()
+            self.wait_job(r['job_id']);a=self.client.get('/api/attempts/'+r['attempt_id']).json()
+            self.assertEqual(a['status'],'summary_failed')
+            kept=next(g for g in a['grades'] if g['provider_id']==self.master)
+            self.client.delete('/api/providers/'+bad['id'])
+            before=len(mock.call_args_list)
+            r=self.client.post('/api/attempts/'+a['id']+'/retry',json={'provider_id':bad['id'],'replacement_provider_id':replacement['id']})
+            self.assertEqual(r.status_code,200,r.text);self.wait_job(r.json()['job_id'])
+            result=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(result['status'],'completed');self.assertEqual(result['mean_score'],15)
+        self.assertEqual(result['master']['id'],replacement['id'])
+        self.assertEqual([g['provider_id'] for g in result['grades'] if g['provider_id']==bad['id']],[])
+        self.assertEqual(next(g for g in result['grades'] if g['provider_id']==self.master),kept)
+        self.assertEqual([c.args[0]['id'] for c in mock.call_args_list[before:] if c.args[1].startswith('独立批改')],[replacement['id']])
+        self.assertEqual(next(c.args[0]['id'] for c in mock.call_args_list[before:] if c.args[1].startswith('汇总')),replacement['id'])
+        self.assertTrue(any(e['role']=='master' for e in result['retry_history']))
+
+    def test_replacement_rejects_success_duplicate_and_invalid_selection_atomically(self):
+        p=self.make_paper();bad=self.add_model('bad');new=self.add_model('other')
+        a=self.submit(p,models=[self.master,bad['id']]);path='/api/attempts/'+a['id']+'/retry'
+        for payload,status in [({'replacement_provider_id':new['id']},422),({'provider_id':self.master,'replacement_provider_id':new['id']},400),({'provider_id':bad['id'],'replacement_provider_id':self.master},400),({'provider_id':bad['id'],'replacement_provider_id':'missing'},400),({'provider_id':bad['id'],'replacement_provider_id':new['id'],'master_id':'missing'},400)]:
+            r=self.client.post(path,json=payload);self.assertEqual(r.status_code,status,r.text)
+            updated=self.client.get('/api/attempts/'+a['id']).json()
+            self.assertEqual(updated['providers'],a['providers']);self.assertEqual(updated['grades'],a['grades'])
+            self.assertNotIn('retry_history',updated)
+
+    def test_replacing_failed_summary_does_not_call_any_coach(self):
+        p=self.make_paper();other=self.add_model('other')
+        async def summary_quota(provider,task,payload):
+            if task.startswith('汇总') and provider['id']==self.master:raise ModelError('额度用完')
+            return await fake_model(provider,task,payload)
+        with patch('app.service.call_model',side_effect=summary_quota) as mock:
+            a=self.submit(p);self.assertEqual(a['status'],'summary_failed')
+            before=len(mock.call_args_list)
+            r=self.client.post('/api/attempts/'+a['id']+'/retry',json={'master_id':other['id']});self.assertEqual(r.status_code,200,r.text)
+            self.wait_job(r.json()['job_id'])
+            updated=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(updated['status'],'completed');self.assertEqual(updated['grades'],a['grades'])
+        self.assertEqual(updated['master']['id'],other['id'])
+        self.assertFalse(any(c.args[1].startswith('独立批改') for c in mock.call_args_list[before:]))
+        self.assertEqual(updated['mean_score'],a['mean_score'])
+
+    def test_summary_retry_refreshes_edited_master_without_relabeling_success(self):
+        p=self.make_paper()
+        async def summary_quota(provider,task,payload):
+            if task.startswith('汇总') and provider['model']=='good':raise ModelError('额度用完')
+            return await fake_model(provider,task,payload)
+        with patch('app.service.call_model',side_effect=summary_quota):
+            a=self.submit(p);self.assertEqual(a['status'],'summary_failed')
+            config=dict(self.provider,name='新汇总模型',model='other',api_key='')
+            self.assertEqual(self.client.put('/api/providers/'+self.master,json=config).status_code,200)
+            r=self.client.post('/api/attempts/'+a['id']+'/retry');self.wait_job(r.json()['job_id'])
+            updated=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(updated['status'],'completed')
+        self.assertEqual(updated['grades'],a['grades'])
+        self.assertEqual(updated['providers'],a['providers'])
+        self.assertEqual(updated['master']['model'],'other')
+
     def test_model_shape_compatibility_and_field_specific_failure(self):
         p=self.make_paper()
         async def compatible(provider,task,data):
