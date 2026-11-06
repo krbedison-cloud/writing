@@ -191,6 +191,29 @@ def main():
                     page.locator('a[href^="#practice/"]').nth(index).click()
                     assert re.sub(r'\s+','',page.locator('#question-materials').text_content())==re.sub(r'\s+','',expected['questions'][index]['materials'])
                     if index==0:
+                        expect(page.locator('#practice-stopwatch output')).to_be_visible()
+                        page.locator('[aria-label="自动暂停时长"]').select_option('3')
+                        page.locator('#answer').focus()
+                        page.evaluate('practiceTimer.clock.lastActivity=performance.now()-180001')
+                        expect(page.locator('.practice-pause')).to_be_visible()
+                        frozen=page.evaluate('practiceTimer.clock.elapsed')
+                        page.wait_for_timeout(350)
+                        assert page.evaluate('practiceTimer.clock.elapsed')==frozen
+                        page.keyboard.press('x')
+                        expect(page.locator('.practice-pause')).not_to_be_visible()
+                        assert 'x' in page.locator('#answer').input_value()
+                        page.locator('#answer').fill('　　')
+                        page.evaluate('practiceTimer.clock.lastActivity=performance.now()-180001')
+                        expect(page.locator('.practice-pause')).to_be_visible()
+                        page.mouse.move(10,10)
+                        expect(page.locator('.practice-pause')).not_to_be_visible()
+                        page.wait_for_timeout(1100)
+                        page.reload();expect(page.locator('#practice-stopwatch')).to_be_visible()
+                        assert page.evaluate('practiceTimer.clock.elapsed')>=1000
+                        expect(page.locator('[aria-label="自动暂停时长"]')).to_have_value('3')
+                        assert page.locator('.practice-pause').count()==1
+                        page.locator('[data-timer-reset]').click()
+                        expect(page.locator('#practice-stopwatch output')).to_have_text('00:00:00')
                         expect(page.locator('#highlight-count')).to_contain_text('已保存')
                         assert page.locator('.paper-row').count()==expected['questions'][0]['paper_spec']['rows']
                         assert page.locator('.paper-row').first.locator('.paper-cell').count()==25
@@ -462,6 +485,7 @@ def main():
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
                 page.set_viewport_size({'width':1440,'height':900})
                 page.goto(base+'/#history');expect(page.locator('tbody tr')).to_have_count(3)
+                expect(page.locator('.practice-pause')).to_have_count(0)
                 page.get_by_role('link',name='查看 →').first.click();expect(page.get_by_text(answers[-1]['answer'],exact=True)).to_be_visible()
                 page.set_viewport_size({'width':390,'height':844});page.goto(base+'/#overview');page.wait_for_selector('.hero')
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'mobile horizontal overflow'

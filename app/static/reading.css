@@ -224,3 +224,16 @@ footer { font-size: 12px; color: var(--muted); }
 .portrait-notes h3 { margin-bottom: 10px; }
 .portrait-notes li { line-height: 1.9; overflow-wrap: anywhere; }
 @media(max-width:800px) { .portrait-notes { grid-template-columns: 1fr; gap: 18px; } }
+
+.practice-stopwatch { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; background: var(--paper); }
+.practice-stopwatch output { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.practice-stopwatch label { display: flex; align-items: center; gap: 4px; }
+.practice-stopwatch select { max-width: 80px; padding: 3px; }
+.practice-stopwatch [data-timer-status] { color: var(--green); }
+.practice-pause { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--ink); text-align: center; }
+.practice-pause[hidden] { display: none; }
+.practice-pause section { max-width: 600px; padding: 32px; }
+.practice-pause h2 { font-size: 32px; margin: 16px 0; }
+.practice-pause p { font-size: 18px; line-height: 1.9; }
+.practice-pause strong { display: block; margin-top: 24px; font-size: 24px; font-variant-numeric: tabular-nums; }
+@media(max-width:800px) { .practice-stopwatch { width: 100%; justify-content: center; } }

@@ -1,0 +1,11 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+require('../app/static/practice-timer.js');
+const {Clock,duration}=global.PracticeTimer;
+test('starts automatically and formats hours',()=>{const c=new Clock(0,100);assert.equal(c.tick(2100),2000);assert.equal(duration(3661000),'01:01:01');});
+test('idle pauses exactly at the deadline even after a delayed tick',()=>{const c=new Clock();assert.equal(c.tick(3600000),300000);assert.ok(c.paused);assert.equal(c.tick(7200000),300000);});
+test('activity resumes without counting the paused gap',()=>{const c=new Clock();c.activity(10000);c.tick(500000);assert.equal(c.elapsed,310000);c.activity(900000);assert.equal(c.tick(901000),311000);assert.equal(c.paused,false);});
+test('reading activity extends the deadline',()=>{const c=new Clock();c.activity(290000);assert.equal(c.tick(300000),300000);assert.equal(c.paused,false);c.tick(600000);assert.equal(c.elapsed,590000);});
+test('background and route departure snapshots exclude away time',()=>{const c=new Clock(1000);c.pause(5000);assert.equal(c.tick(500000),6000);const restored=new Clock(c.elapsed,500000);assert.equal(restored.tick(501000),7000);});
+test('reset starts a new timed run and configurable idle works',()=>{const c=new Clock(1000,0,180000);c.tick(200000);c.reset(250000);assert.equal(c.tick(251000),1000);assert.equal(c.paused,false);});
+test('invalid saved values do not corrupt the clock',()=>{for(const v of [NaN,Infinity,-1])assert.equal(new Clock(v).tick(1000),1000);});
