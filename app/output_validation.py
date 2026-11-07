@@ -40,6 +40,7 @@ def dimensions(value):
 LABELS={'score':'总分','dimensions':'六维分','high_score_answer':'高分答案',
         'strengths':'优点','weaknesses':'不足','suggestions':'改进建议','evidence':'评分证据',
         'analysis':'分析正文','consensus':'共识','disagreements':'分歧','action_plan':'训练建议',
+        'high_score_plan':'构思说明','framework':'论点框架','progression':'层次递进','material_use':'材料运用说明',
         'task_analysis':'审题分析','high_score_self_check':'范文字数自检'}
 
 def validation_message(error):

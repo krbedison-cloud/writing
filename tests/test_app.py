@@ -291,6 +291,59 @@ class AppTests(unittest.TestCase):
         self.assertEqual(a['mean_score'],39)
         self.assertEqual(a['grades'][0]['result']['score'],39)
 
+    def test_reference_plans_stay_with_their_version_and_out_of_summary(self):
+        from test_reference_plan import PLAN
+        from test_essay_policy import essay_fixture
+        async def with_plan(provider,task,data):
+            if task.startswith('独立批改'):
+                result=grade(35);result.update(high_score_answer=essay_fixture(),high_score_plan=PLAN);return result
+            if task.startswith('单独重写高分范文'):
+                return dict(high_score_answer=essay_fixture(6),high_score_plan=dict(PLAN,framework='这是四个分论段的新框架。'))
+            return await fake_model(provider,task,data)
+        p=self.make_paper()
+        with patch('app.service.call_model',side_effect=with_plan) as mock:
+            a=self.submit(p,2);ref=a['grades'][0]['references'][0]
+            self.assertEqual(ref['plan'],PLAN)
+            self.assertTrue(ref['layout_check']['valid']);self.assertGreater(ref['layout_check']['word_count'],1000)
+            summary=next(c.args[2] for c in mock.call_args_list if c.args[1].startswith('汇总'))
+            self.assertNotIn('high_score_plan',summary['reviews'][0]['result'])
+            j=self.client.post('/api/attempts/'+a['id']+'/references',json={'provider_id':self.master,'direction':'rewrite'}).json()
+            self.assertEqual(self.wait_job(j['id'])['status'],'completed')
+        updated=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(updated['grades'][0]['references'][0]['plan'],PLAN)
+        self.assertEqual(updated['grades'][0]['references'][-1]['plan']['framework'],'这是四个分论段的新框架。')
+        self.assertEqual(updated['grades'][0]['result'],a['grades'][0]['result'])
+
+    def test_plan_only_generation_preserves_answer_score_versions_and_layout(self):
+        from test_reference_plan import PLAN
+        p=self.make_paper();a=self.submit(p)
+        calls=[]
+        async def plan_only(provider,task,data):
+            calls.append((task,data));return PLAN
+        path='/api/attempts/'+a['id']+'/reference-plan'
+        with patch('app.service.call_model',side_effect=plan_only):
+            j=self.client.post(path,json={'provider_id':self.master,'reference_id':'original'}).json()
+            self.assertEqual(self.wait_job(j['id'])['status'],'completed')
+        updated=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(len(calls),1)
+        self.assertTrue(calls[0][0].startswith('范文构思讲解'))
+        self.assertEqual(calls[0][1]['question']['materials'],a['question_snapshot']['materials'])
+        self.assertNotIn('answer',calls[0][1]);self.assertNotIn('reviews',calls[0][1])
+        self.assertEqual(updated['answer'],a['answer']);self.assertEqual(updated['mean_score'],a['mean_score'])
+        self.assertEqual(updated['grades'][0]['result'],a['grades'][0]['result'])
+        ref=updated['grades'][0]['references'][0];original=a['grades'][0]['references'][0]
+        self.assertEqual(ref['answer'],original['answer']);self.assertEqual(ref['layout_check'],original['layout_check'])
+        self.assertEqual(ref['plan'],PLAN)
+        with patch('app.service.call_model',side_effect=ModelError('说明接口暂不可用')):
+            j=self.client.post(path,json={'provider_id':self.master}).json()
+            self.assertEqual(self.wait_job(j['id'])['status'],'failed')
+        preserved=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(preserved['grades'],updated['grades'])
+        self.assertEqual(self.client.post(path,json={'provider_id':self.master,'reference_id':'missing'}).status_code,400)
+        busy=self.app.state.service.job('reference',a['id'])
+        self.assertEqual(self.client.post(path,json={'provider_id':self.master}).status_code,409)
+        self.app.state.service.finish(busy)
+
     def test_reference_regeneration_keeps_scores_answers_and_old_versions(self):
         p=self.make_paper();a=self.submit(p)
         original=a['grades'][0]['result']['high_score_answer'];signature=self.client.get('/api/profile').json()['signature']

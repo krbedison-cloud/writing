@@ -23,6 +23,7 @@ from app.paper import check_paper
 from app.reference_policy import is_short_comment, SHORT_COMMENT_POLICY
 from test_reference_policy import COMMENT
 from test_essay_policy import essay_fixture
+from test_reference_plan import PLAN
 from app.grading_prompts import ESSAY_CALIBRATION
 
 counts={}
@@ -49,7 +50,7 @@ class MockModel(BaseHTTPRequestHandler):
             if model=='coach-truncated' and (body.get('max_completion_tokens') or body.get('max_tokens'))<32768:
                 self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
                 self.wfile.write(json.dumps({'choices':[{'finish_reason':'length','message':{'content':'partial'}}],'usage':{'completion_tokens':6000,'completion_tokens_details':{'reasoning_tokens':5900}}}).encode());return
-            result=dict(score=payload['full_score']-(4 if model=='coach-a' else 6),dimensions={k:70 for k in DIMENSIONS},strengths=['观点清晰'],weaknesses=['材料要点尚有遗漏'],suggestions=['分类概括关键措施'],evidence=['原答案“加强建设”需要展开具体措施'],high_score_answer='这是模拟接口生成的参考答案，仅用于验证调用与存档流程，不是真实模型批改。',task_analysis=dict(task=payload['question']['prompt'],genre='按本题题干审题',requirements=[payload['question']['prompt']],material_basis=[payload['question']['materials'][:80]]))
+            result=dict(score=payload['full_score']-(4 if model=='coach-a' else 6),dimensions={k:70 for k in DIMENSIONS},strengths=['观点清晰'],weaknesses=['材料要点尚有遗漏'],suggestions=['分类概括关键措施'],evidence=['原答案“加强建设”需要展开具体措施'],high_score_plan=PLAN,high_score_answer='这是模拟接口生成的参考答案，仅用于验证调用与存档流程，不是真实模型批改。',task_analysis=dict(task=payload['question']['prompt'],genre='按本题题干审题',requirements=[payload['question']['prompt']],material_basis=[payload['question']['materials'][:80]]))
         elif task.startswith(('范文校正','单独重写高分范文')):
             assert (SHORT_COMMENT_POLICY in task)==is_short_comment(payload['question'])
             received_reference_contexts.append(payload['question'])
@@ -61,7 +62,10 @@ class MockModel(BaseHTTPRequestHandler):
             if is_short_comment(payload['question']):answer=COMMENT
             elif payload['question']['kind']=='essay':answer=essay_fixture(6)
             check=check_paper(answer,spec)
-            result=dict(high_score_answer=answer,high_score_self_check=dict(word_count=check['word_count'],used_rows=check['used_rows'],complies=check['valid'],format_note='已检查标题、段首缩进和换行占格'))
+            result=dict(high_score_plan=dict(PLAN,framework='重写范文的框架说明。'),high_score_answer=answer,high_score_self_check=dict(word_count=check['word_count'],used_rows=check['used_rows'],complies=check['valid'],format_note='已检查标题、段首缩进和换行占格'))
+        elif task.startswith('范文构思讲解'):
+            assert 'reference_answer' in payload and 'answer' not in payload
+            result=dict(PLAN,framework='单独生成的框架说明。')
         elif task.startswith('识别试卷'):
             from app.pdf import parse_text
             result=parse_text(payload['text'],payload['filename']);result['year']=int(result['year'])
@@ -449,6 +453,7 @@ def main():
                         expect(page.locator('.paper-preview .paper-row')).to_have_count(expected['questions'][0]['paper_spec']['rows'])
                         page.locator('.reference-version').select_option('original')
                         expect(page.locator('.answer-reference')).to_have_text(original_reference)
+                        expect(page.locator('.reference-plan')).to_contain_text(PLAN['framework'])
                         page.locator('[data-action="review-tab"]').nth(1).click()
                         page.locator('[data-action="regenerate-reference"][data-direction="more"]').click()
                         expect(page.locator('.reference-version option')).to_have_count(2,timeout=20000)
@@ -619,6 +624,39 @@ def main():
                 assert changed['grades']==old['grades'] and counts['coach-a']==before
                 page.reload();expect(page.locator('[data-action="replace-master"]')).to_have_count(0)
                 expect(page.get_by_text('重试与接口更换记录',exact=True)).to_be_visible()
+                # Explain the selected version without regrading or rewriting it.
+                page.goto(base+'/#attempt/'+first['attempt_id'])
+                expect(page.locator('.reference-plan')).to_be_visible()
+                plan_before=httpx.get(base+'/api/attempts/'+first['attempt_id']).json()
+                count_before=dict(counts)
+                selected=page.locator('[data-action="explain-reference"]')
+                provider_id=selected.get_attribute('data-provider');reference_id=selected.get_attribute('data-reference')
+                selected.click()
+                expect(page.locator('.reference-plan')).to_contain_text('单独生成的框架说明。',timeout=15000)
+                plan_after=httpx.get(base+'/api/attempts/'+first['attempt_id']).json()
+                assert counts==count_before
+                assert plan_after['answer']==plan_before['answer'] and plan_after['mean_score']==plan_before['mean_score']
+                old_grade=next(g for g in plan_before['grades'] if g['provider_id']==provider_id)
+                new_grade=next(g for g in plan_after['grades'] if g['provider_id']==provider_id)
+                assert new_grade['result']==old_grade['result']
+                old_ref=next(r for r in old_grade['references'] if r['id']==reference_id)
+                new_ref=next(r for r in new_grade['references'] if r['id']==reference_id)
+                assert new_ref['answer']==old_ref['answer'] and new_ref['layout_check']==old_ref['layout_check']
+                # Performance setting is opt-in and only enabled for the documented official model.
+                page.goto(base+'/#models');page.locator('[data-action="add-model"]').first.click()
+                page.locator('[name="name"]').fill('GLM思考档位测试')
+                page.locator('[name="base_url"]').fill('https://open.bigmodel.cn/api/paas/v4')
+                page.locator('[name="model"]').fill('glm-5.3')
+                effort=page.locator('[name="reasoning_effort"]');expect(effort).to_be_enabled();expect(effort).to_have_value('default')
+                effort.select_option('high');page.locator('#model-form button[type="submit"]').click()
+                expect(page.locator('#editor')).not_to_be_visible()
+                config=next(p for p in httpx.get(base+'/api/providers').json() if p['name']=='GLM思考档位测试')
+                assert config['reasoning_effort']=='high'
+                page.locator('[data-action="edit-model"][data-id="'+config['id']+'"]').click()
+                expect(page.locator('[name="reasoning_effort"]')).to_have_value('high')
+                page.locator('[name="model"]').fill('other-model')
+                expect(page.locator('[name="reasoning_effort"]')).to_be_disabled()
+                page.locator('[data-action="close-dialog"]').click()
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()

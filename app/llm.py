@@ -34,7 +34,12 @@ def usage_metrics(data,protocol):
     out=raw.get('candidatesTokenCount') if protocol=='gemini' else raw.get('output_tokens') if protocol=='anthropic' else raw.get('completion_tokens')
     details=raw.get('completion_tokens_details') or {}
     reasoning=raw.get('thoughtsTokenCount') if protocol=='gemini' else details.get('reasoning_tokens') if isinstance(details,dict) else None
-    return {key:value for key,value in [('output_tokens',out),('reasoning_tokens',reasoning)] if isinstance(value,int) and not isinstance(value,bool) and value>=0}
+    inp=raw.get('promptTokenCount') if protocol=='gemini' else raw.get('input_tokens') if protocol=='anthropic' else raw.get('prompt_tokens')
+    if protocol=='anthropic' and isinstance(inp,int) and not isinstance(inp,bool):
+        inp+=sum(raw.get(k,0) for k in ('cache_read_input_tokens','cache_creation_input_tokens') if isinstance(raw.get(k,0),int) and not isinstance(raw.get(k,0),bool) and raw.get(k,0)>=0)
+    prompt_details=raw.get('prompt_tokens_details') or {}
+    cached=raw.get('cachedContentTokenCount') if protocol=='gemini' else raw.get('cache_read_input_tokens') if protocol=='anthropic' else prompt_details.get('cached_tokens',raw.get('prompt_cache_hit_tokens')) if isinstance(prompt_details,dict) else raw.get('prompt_cache_hit_tokens')
+    return {key:value for key,value in [('input_tokens',inp),('cached_tokens',cached),('output_tokens',out),('reasoning_tokens',reasoning)] if isinstance(value,int) and not isinstance(value,bool) and value>=0}
 
 def parse_json(text):
     text = text.strip()
@@ -48,6 +53,10 @@ def parse_json(text):
     if not isinstance(value, dict):
         raise ModelError('模型返回的 JSON 必须是对象')
     return value
+
+def supports_reasoning_effort(provider):
+    return (provider.get('protocol')=='openai' and urlsplit(provider['base_url']).hostname=='open.bigmodel.cn'
+            and provider.get('model','').lower()=='glm-5.3')
 
 def output_parameter(provider):
     return 'max_tokens' if urlsplit(provider['base_url']).hostname=='open.bigmodel.cn' else 'max_completion_tokens'
@@ -99,7 +108,9 @@ def http_error(response, provider, body):
     return ModelError(detail+'（响应原文不保存）')
 
 async def call_model(provider, task, payload):
-    message = json.dumps({'task': task, 'data': payload}, ensure_ascii=False)
+    ordered=dict(payload)
+    if 'question' in ordered:ordered={'question':ordered.pop('question'), **ordered}
+    message = json.dumps({'data':ordered,'task':task},ensure_ascii=False,separators=(',',':'))
     if len(message) > 160000:
         raise ModelError('输入超过模型上下文保护上限（16 万字符），请拆分材料')
     base = provider['base_url']
@@ -121,6 +132,8 @@ async def call_model(provider, task, payload):
         if key:
             headers['Authorization'] = 'Bearer ' + key
         body = {'model':provider['model'],'messages':[{'role':'system','content':SYSTEM},{'role':'user','content':message}],output_parameter(provider):limit}
+    if supports_reasoning_effort(provider) and provider.get('reasoning_effort','default')!='default':
+        body['reasoning_effort']=provider['reasoning_effort']
     try:
         async with asyncio.timeout(timeout_seconds), httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=min(20, timeout_seconds)), follow_redirects=False) as client:
             response = await client.post(url, headers=headers, json=body)

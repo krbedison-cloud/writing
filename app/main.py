@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Body
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from .db import Database, dumps
-from .schemas import ProviderInput, PaperInput, AttemptInput, RegenerateInput, RetryInput, HighlightInput, HighlightColor, KINDS
+from .schemas import ProviderInput, PaperInput, AttemptInput, RegenerateInput, ReferencePlanInput, RetryInput, HighlightInput, HighlightColor, KINDS
 from .pdf import extract_pdf, parse_text
 from .materials import prepare_paper, model_question
 from .annotations import canonical_text
@@ -298,6 +298,20 @@ def create_app(data_dir=None):
         j.update(provider_id=value.provider_id,direction=value.direction)
         db.put('jobs',j['id'],j)
         service.launch(service.regenerate_reference(j,id,value.provider_id,value.direction,value.reference_id))
+        return j
+    @app.post('/api/attempts/{id}/reference-plan')
+    async def explain_reference(id: str, value: ReferencePlanInput):
+        a=attempt(id)
+        if a['status'] in ('queued','running') or reference_running(id):
+            raise HTTPException(409,'这份作答的任务正在执行，请稍后生成构思说明')
+        g=next((g for g in a['grades'] if g['provider_id']==value.provider_id and g['status']=='completed'),None)
+        if not g or not any(r['id']==value.reference_id for r in g['references']):
+            raise HTTPException(400,'请选择已完成批改的有效范文版本')
+        service.provider(value.provider_id)
+        j=service.job('reference',id)
+        j.update(provider_id=value.provider_id,subtype='plan',reference_id=value.reference_id)
+        db.put('jobs',j['id'],j)
+        service.launch(service.explain_reference(j,id,value.provider_id,value.reference_id))
         return j
     @app.post('/api/attempts/{id}/retry')
     async def retry(id: str, value: RetryInput | None = None):

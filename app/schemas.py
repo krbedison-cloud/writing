@@ -13,6 +13,7 @@ class ProviderInput(BaseModel):
     model: str = Field(min_length=1, max_length=160, pattern=r"^[a-zA-Z0-9._:/@+\-]+$")
     api_key: str = Field(default="", max_length=2000)
     max_tokens: int = Field(default=DEFAULT_MAX_TOKENS, ge=1000, le=MAX_OUTPUT_TOKENS)
+    reasoning_effort: Literal["default", "low", "high", "max"] = "default"
     timeout_seconds: int = Field(default=600, ge=60, le=1800)
     @model_validator(mode="after")
     def validate_url(self):
@@ -82,7 +83,26 @@ class ReferenceSelfCheck(BaseModel):
     complies: bool
     format_note: str = Field(default="", max_length=1800)
 
+class ReferencePlan(BaseModel):
+    framework: str = Field(min_length=2, max_length=1600)
+    progression: str = Field(min_length=2, max_length=1600)
+    material_use: list[str] = Field(min_length=1, max_length=100)
+    @field_validator('material_use', mode='before')
+    @classmethod
+    def list_text(cls, value):return text_list(value)
+
+class ReferencePlanInput(BaseModel):
+    provider_id: str
+    reference_id: str = "original"
+
 class ReferenceDraft(BaseModel):
+    high_score_plan: ReferencePlan | None = None
+    @field_validator('high_score_plan', mode='before')
+    @classmethod
+    def valid_plan(cls,value):
+        if value is None:return None
+        try:return ReferencePlan.model_validate(value)
+        except (ValueError,TypeError):return None
     high_score_answer: str = Field(min_length=10, max_length=12000)
     high_score_self_check: ReferenceSelfCheck | None = None
     @field_validator('high_score_self_check', mode='before')

@@ -78,6 +78,7 @@ class Database:
         if not rows:
             return None
         p = json.loads(rows[0]["config"])
+        p.setdefault("reasoning_effort", "default")
         p.setdefault("timeout_seconds", 600)
         p.setdefault("max_tokens", 32768)
         p.update(id=id, has_key=bool(rows[0]["secret"]))
