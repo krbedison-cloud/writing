@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh | bash
 ```
 
-安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.20` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
+安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.21` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
 
 配置保存在 `~/shenlun-studio/.env`，程序只监听本机 `18086` 端口；数据使用 Docker 数据卷 `shenlun-studio-data`。安装脚本会输出实际访问地址和停止命令。重复运行安装命令不会覆盖已有 `.env`；如版本配置文件已有人工修改，会停止而不是覆盖。发布的新版本可以通过再次执行安装命令更新，既有数据保留。
 
@@ -39,7 +39,7 @@ SHENLUN_DIR="$HOME/Applications/shenlun-studio" bash install-shenlun.sh
 公开镜像可直接拉取：
 
 ```bash
-docker pull ghcr.io/krbedison-cloud/writing:v0.1.20
+docker pull ghcr.io/krbedison-cloud/writing:v0.1.21
 ```
 
 GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架构镜像并创建对应标签的 Release。发布新版本时同步更新 VERSION、安装脚本默认版本与部署配置。GHCR 首次创建的包可能是私有的；仓库拥有者可到 GitHub 的 Packages → writing → Package settings 将包设为 Public，之后无需登录即可拉取。即使没有更改包的可见性，上面的安装器仍能使用公开 Release 中的预构建 Docker 镜像完成安装，不必登录 GHCR。
@@ -49,7 +49,7 @@ GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架
 在运行 Docker Desktop 的 Mac mini 上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.20/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.21/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
 ```
 
 安装器会保留已有数据和其他配置，持久设置 `APP_BIND=0.0.0.0`、`ALLOW_LAN=1` 以及指定端口。Docker 会在 Mac 所有 IPv4 接口监听 `18086`，应用允许以私有局域网 IP 访问；原来的主机白名单和同源写入检查仍有效。IP 变化后通常不需要重新配置白名单。
@@ -63,7 +63,7 @@ Mac 防火墙如提示 Docker 接收入站连接，选择允许。设备需要�
 恢复仅本机访问：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.20/install.sh | SHENLUN_LAN=0 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.21/install.sh | SHENLUN_LAN=0 bash
 ```
 
 未指定 `SHENLUN_LAN` 时，保留现有的访问模式。
@@ -264,3 +264,9 @@ API 辅助识别兼容数字年份、中文训练题型、空值字数、文字�
 接口额度不足或失效时，可在失败教练卡片点击“更换接口重试”，选择其他已配置接口单独补批；旧接口配置已经删除也支持替换。直接编辑失败接口的地址、协议或模型后，点击“单独重试”会按当前配置执行。成功的教练评分、参考范文和原答案保留，结果按实际模型标注；旧失败记录和接口更换记录保存在本次作答详情和导出中，不包含密钥。同一接口不能同时占用两位教练的评分位置。
 
 若被更换的失败接口同时承担汇总，新接口会一并负责汇总；汇总失败也可以单独点“更换汇总接口”，只更新汇总而不再次请求各教练评分。补批后重新计算均分并生成汇总。执行中的任务仍需等待结束，避免并发覆盖结果。
+
+大作文评分使用自定义50分校准：30分一般，33分二类文起点（论点准确、框架合理、论述自洽无明显瑕疵），35分二类中上，36–38分要求论点递进、论证严密深刻、表达简明规范且文笔较好；38分以上极罕见，须提供突出表现的原答证据。分档是模型判断锚点，程序不保底、不压分、不把38当硬上限；四个分论段不构成扣分理由。新评分带有校准标记，旧成功评分保留。
+
+大作文范文默认总分总、三个分论段，必要时可四个；每段先写总结性观点句，重说理论证与评论，典型案例只从本题材料择取，概括主体、行动与作用，不列具体数据、不堆砌或过度泛化。首次生成、自动修订和单独重写共用紧凑规则。范文另行严格校验1001–1200字与25×48格，标题、缩进、换行空耗都计入1200格；可在字数范围内仍因纸面超限而提示修订。原答案按原题纸面要求评价，原有题干和历史纸面快照不改写。建议范文约1050–1120字以留出格式空间。
+
+评分校准仅在需要评分/汇总时发送，重写范文不发送整套评分规则；公共提示已压缩，材料每次仅发送本题一份，范文格纸规则与题目相同时不重复传输长规则文本，自动修订仍限一次。

@@ -240,6 +240,57 @@ class AppTests(unittest.TestCase):
         self.assertFalse(a['grades'][0]['references'][-1]['style_check']['valid'])
         self.assertEqual(sum(c.args[1].startswith('范文校正') for c in mock.call_args_list),1)
 
+    def test_essay_calibration_reference_limits_and_all_rewrite_paths(self):
+        from test_essay_policy import essay_fixture
+        from app.grading_prompts import ESSAY_CALIBRATION
+        from app.reference_policy import ESSAY_REFERENCE_POLICY
+        initial=essay_fixture(size=236)
+        async def essay_model(provider,task,data):
+            if task.startswith('独立批改'):
+                result=grade(35);result['high_score_answer']=initial;return result
+            if task.startswith(('范文校正','单独重写高分范文')):
+                return {'high_score_answer':essay_fixture(6)}
+            return await fake_model(provider,task,data)
+        p=self.make_paper()
+        with patch('app.service.call_model',side_effect=essay_model) as mock:
+            a=self.submit(p,2)
+            self.assertEqual(a['mean_score'],35)
+            g=a['grades'][0];self.assertEqual(g['calibration_policy'],'essay-v1')
+            self.assertFalse(g['references'][0]['layout_check']['valid'])
+            self.assertTrue(g['references'][-1]['layout_check']['valid'])
+            self.assertEqual(g['references'][-1]['style_check']['body_paragraphs'],6)
+            self.assertEqual(g['references'][-1]['paper_spec']['word_min'],1001)
+            for direction in ('more','less','rewrite'):
+                source=self.client.get('/api/attempts/'+a['id']).json()['grades'][0]['references'][-1]['id']
+                j=self.client.post('/api/attempts/'+a['id']+'/references',json={'provider_id':self.master,'direction':direction,'reference_id':source}).json()
+                self.assertEqual(self.wait_job(j['id'])['status'],'completed')
+            calls=[c for c in mock.call_args_list if c.args[1].startswith(('独立批改','范文校正','单独重写高分范文'))]
+            self.assertEqual(len(calls),5)
+            for c in calls:
+                task,data=c.args[1:]
+                self.assertEqual(task.count(ESSAY_REFERENCE_POLICY),1)
+                self.assertNotIn(ESSAY_CALIBRATION,task)
+                self.assertEqual(data['reference_paper_spec']['word_min'],1001)
+                self.assertEqual(data['reference_paper_spec']['cells'],1200)
+                self.assertNotIn('rules',data['reference_paper_spec'])
+                self.assertEqual(data['question']['materials'],p['questions'][2]['materials'])
+            grading=next(c.args[2] for c in calls if c.args[1].startswith('独立批改'))
+            self.assertEqual(grading['calibration'],ESSAY_CALIBRATION)
+            self.assertEqual(grading['question']['paper_spec']['word_min'],1000)
+            summary=next(c.args[2] for c in mock.call_args_list if c.args[1].startswith('汇总'))
+            self.assertEqual(summary['calibration'],ESSAY_CALIBRATION)
+        updated=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(updated['grades'][0]['result'],g['result'])
+        self.assertEqual(updated['answer'],a['answer'])
+
+    def test_essay_calibration_does_not_impose_38_as_a_hard_cap(self):
+        async def high(provider,task,data):
+            if task.startswith('独立批改'):return grade(39)
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=high):a=self.submit(self.make_paper(),2)
+        self.assertEqual(a['mean_score'],39)
+        self.assertEqual(a['grades'][0]['result']['score'],39)
+
     def test_reference_regeneration_keeps_scores_answers_and_old_versions(self):
         p=self.make_paper();a=self.submit(p)
         original=a['grades'][0]['result']['high_score_answer'];signature=self.client.get('/api/profile').json()['signature']

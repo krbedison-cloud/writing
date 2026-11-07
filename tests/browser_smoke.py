@@ -22,6 +22,8 @@ from app.schemas import DIMENSIONS
 from app.paper import check_paper
 from app.reference_policy import is_short_comment, SHORT_COMMENT_POLICY
 from test_reference_policy import COMMENT
+from test_essay_policy import essay_fixture
+from app.grading_prompts import ESSAY_CALIBRATION
 
 counts={}
 received_contexts=[]
@@ -37,6 +39,9 @@ class MockModel(BaseHTTPRequestHandler):
         if task.startswith('独立批改'):
             if model=='coach-c':time.sleep(13)
             assert (SHORT_COMMENT_POLICY in task)==is_short_comment(payload['question'])
+            if payload['question']['kind']=='essay':
+                assert payload['calibration']==ESSAY_CALIBRATION
+                assert payload['reference_paper_spec']['word_min']==1001
             received_contexts.append(payload['question'])
             counts[model]=counts.get(model,0)+1
             if model=='coach-b' and counts[model]==1:
@@ -48,12 +53,13 @@ class MockModel(BaseHTTPRequestHandler):
         elif task.startswith(('范文校正','单独重写高分范文')):
             assert (SHORT_COMMENT_POLICY in task)==is_short_comment(payload['question'])
             received_reference_contexts.append(payload['question'])
-            spec=payload['question']['paper_spec'];header='模拟接口生成的参考范文'
+            spec=payload.get('reference_paper_spec') or payload['question']['paper_spec'];header='模拟接口生成的参考范文'
             target=payload.get('target_word_count') or max(spec['word_min'],round((spec['word_max'] or spec['cells'])*.8))
             target=max(len(header)+10,min(target,(spec['word_max'] or spec['cells'])-25))
             target=max(target,spec['word_min'])
             answer=header+'\n　　'+'甲'*(target-len(header))
             if is_short_comment(payload['question']):answer=COMMENT
+            elif payload['question']['kind']=='essay':answer=essay_fixture(6)
             check=check_paper(answer,spec)
             result=dict(high_score_answer=answer,high_score_self_check=dict(word_count=check['word_count'],used_rows=check['used_rows'],complies=check['valid'],format_note='已检查标题、段首缩进和换行占格'))
         elif task.startswith('识别试卷'):
@@ -459,6 +465,16 @@ def main():
                         assert new_grade['result']==old_grade['result']
                         assert new_grade['references'][-1]['style_check']['valid']
                         assert new_grade['references'][-1]['answer']==COMMENT
+                    if index==2:
+                        expect(page.get_by_text('大作文形式检查：通过',exact=True)).to_be_visible()
+                        expect(page.get_by_text('大作文训练校准：',exact=False)).to_be_visible()
+                        latest=a['grades'][0]['references'][-1]
+                        assert latest['layout_check']['valid']
+                        assert 1000<latest['layout_check']['word_count']<=1200
+                        assert latest['layout_check']['used_rows']<=48
+                        assert latest['style_check']['body_paragraphs']==6
+                        assert latest['paper_spec']['word_min']==1001
+                        expect(page.locator('.reference-paper-target .paper-row')).to_have_count(48)
                 for context in received_contexts:
                     assert context['materials']==expected['questions'][context['number']-1]['materials']
                     assert 'MANUAL_PASSAGE_ONLY' not in json.dumps(context)
