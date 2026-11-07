@@ -642,21 +642,52 @@ def main():
                 old_ref=next(r for r in old_grade['references'] if r['id']==reference_id)
                 new_ref=next(r for r in new_grade['references'] if r['id']==reference_id)
                 assert new_ref['answer']==old_ref['answer'] and new_ref['layout_check']==old_ref['layout_check']
-                # Performance setting is opt-in and only enabled for the documented official model.
+                # Provider-specific controls are visible only for the documented official model.
                 page.goto(base+'/#models');page.locator('[data-action="add-model"]').first.click()
                 page.locator('[name="name"]').fill('GLM思考档位测试')
                 page.locator('[name="base_url"]').fill('https://open.bigmodel.cn/api/paas/v4')
                 page.locator('[name="model"]').fill('glm-5.3')
-                effort=page.locator('[name="reasoning_effort"]');expect(effort).to_be_enabled();expect(effort).to_have_value('default')
+                effort=page.locator('[name="reasoning_effort"]');expect(effort).to_be_visible();expect(effort).to_be_enabled();expect(effort).to_have_value('default')
                 effort.select_option('high');page.locator('#model-form button[type="submit"]').click()
                 expect(page.locator('#editor')).not_to_be_visible()
                 config=next(p for p in httpx.get(base+'/api/providers').json() if p['name']=='GLM思考档位测试')
                 assert config['reasoning_effort']=='high'
                 page.locator('[data-action="edit-model"][data-id="'+config['id']+'"]').click()
                 expect(page.locator('[name="reasoning_effort"]')).to_have_value('high')
-                page.locator('[name="model"]').fill('other-model')
-                expect(page.locator('[name="reasoning_effort"]')).to_be_disabled()
+                for protocol,url,model in [
+                    ('openai','https://api.deepseek.com/v1','deepseek-reasoner'),
+                    ('openai','https://api.moonshot.cn/v1','kimi-k2.5'),
+                    ('openai','https://other.example/v1','glm-5.3'),
+                    ('openai','https://open.bigmodel.cn/api/paas/v4','other-model'),
+                    ('anthropic','https://open.bigmodel.cn/api/paas/v4','glm-5.3'),
+                ]:
+                    page.locator('[name="protocol"]').select_option(protocol)
+                    page.locator('[name="base_url"]').fill(url)
+                    page.locator('[name="model"]').fill(model)
+                    expect(effort).not_to_be_visible();expect(effort).to_be_disabled()
+                    expect(page.get_by_text('思考强度 · 智谱官方 GLM-5.3',exact=False)).not_to_be_visible()
+                    assert 'reasoning_effort' not in page.locator('#model-form').evaluate('(form)=>Object.fromEntries(new FormData(form))')
+                page.locator('[name="protocol"]').select_option('openai')
+                expect(effort).not_to_be_visible()  # The protocol selector resets the URL before checking support.
+                page.locator('[name="base_url"]').fill('https://open.bigmodel.cn/api/paas/v4')
+                expect(effort).to_be_visible();expect(effort).to_be_enabled();expect(effort).to_have_value('high')
                 page.locator('[data-action="close-dialog"]').click()
+                # DS/Kimi save and reopen without showing or sending a GLM control.
+                for name,url,model in [('DS编辑测试','https://api.deepseek.com/v1','deepseek-reasoner'),('Kimi编辑测试','https://api.moonshot.cn/v1','kimi-k2.5')]:
+                    page.locator('[data-action="add-model"]').first.click()
+                    expect(page.locator('[name="reasoning_effort"]')).not_to_be_visible()
+                    page.locator('[name="name"]').fill(name)
+                    page.locator('[name="base_url"]').fill(url)
+                    page.locator('[name="model"]').fill(model)
+                    page.locator('[name="timeout_seconds"]').fill('900')
+                    page.locator('#model-form button[type="submit"]').click();expect(page.locator('#editor')).not_to_be_visible()
+                    provider=next(p for p in httpx.get(base+'/api/providers').json() if p['name']==name)
+                    page.locator('[data-action="edit-model"][data-id="'+provider['id']+'"]').click()
+                    expect(page.locator('[name="base_url"]')).to_have_value(url)
+                    expect(page.locator('[name="model"]')).to_have_value(model)
+                    expect(page.locator('[name="timeout_seconds"]')).to_have_value('900')
+                    expect(page.locator('[name="reasoning_effort"]')).not_to_be_visible()
+                    page.locator('[data-action="close-dialog"]').click()
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()
