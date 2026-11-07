@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import httpx
+from urllib.parse import urlsplit
 from .model_limits import next_token_limit
 
 SYSTEM = '''你是严谨的公务员申论教练。只输出有效 JSON，不使用 Markdown。
@@ -48,6 +49,55 @@ def parse_json(text):
         raise ModelError('模型返回的 JSON 必须是对象')
     return value
 
+def output_parameter(provider):
+    return 'max_tokens' if urlsplit(provider['base_url']).hostname=='open.bigmodel.cn' else 'max_completion_tokens'
+
+def error_info(response):
+    # Inspect bounded error fields for classification, never echo upstream text.
+    try:
+        data=json.loads(response.text[:16384])
+        error=data.get('error',data) if isinstance(data,dict) else {}
+        if not isinstance(error,dict):error={}
+    except (ValueError,TypeError):error={}
+    message=error.get('message','')
+    message=message[:8000] if isinstance(message,str) else ''
+    param=error.get('param')
+    param=param if param in ('max_tokens','max_completion_tokens','model','messages','temperature','top_p','thinking','reasoning_effort') else None
+    raw_code=str(error.get('code',error.get('type','')))
+    code=raw_code if raw_code in {'1210','1211','1113','1301','invalid_api_key','model_not_found','context_length_exceeded','insufficient_quota','invalid_request_error','unsupported_parameter'} else None
+    return message,param,code
+
+def rejected_parameter(response, name):
+    message,param,code=error_info(response)
+    # Some compatible gateways return a plain-text unsupported-parameter error.
+    text=(message or response.text[:4000]).lower()
+    return (param==name and code=='unsupported_parameter') or (name in text and bool(re.search(r'unsupported|not supported|not support|unrecognized|unknown|extra.*forbidden|不支持|未知参数|无法识别',text)))
+
+def http_error(response, provider, body):
+    message,param,code=error_info(response)
+    text=message.lower()
+    if code=='insufficient_quota' or re.search(r'余额|额度|欠费|quota|insufficient.*balance',text):
+        reason='额度或余额不足，可充值或更换接口重试'
+    elif code=='model_not_found' or re.search(r'model.*(?:not found|does not exist)|模型.*(?:不存在|未开通|无权限)',text):
+        reason='模型不存在、未开通或无调用权限，请核对模型ID与服务商授权'
+    elif code=='invalid_api_key' or re.search(r'api.?key.*(?:invalid|expired)|密钥.*(?:无效|过期)',text):
+        reason='密钥无效或已过期，请在模型设置更新'
+    elif code=='context_length_exceeded' or re.search(r'context.*(?:length|limit)|上下文.*(?:超过|超限)|输入.*过长',text):
+        reason='输入或总上下文超限，请缩小本题材料范围或调整输出预算'
+    elif re.search(r'max[_ ]?(?:completion[_ ]?)?tokens|最大.*(?:token|令牌)|输出.*(?:上限|超限)',text):
+        reason='输出token参数不符合服务商要求，请核对该模型支持的参数及输出上限'
+    elif param:
+        reason='请求参数不被接受：'+param+'，请核对服务商要求'
+    elif code=='1210':
+        reason='服务商判定请求参数有误，请核对模型ID及输出上限'
+    else:
+        reason='未识别到可安全展示的具体原因，请核对协议、模型ID、额度及权限'
+    detail=f'接口返回 HTTP {response.status_code}；'+reason
+    if code:detail+='；服务商错误码 '+code
+    for name in ('max_tokens','max_completion_tokens'):
+        if name in body:detail+=f'；本次 {name}={body[name]}'
+    return ModelError(detail+'（响应原文不保存）')
+
 async def call_model(provider, task, payload):
     message = json.dumps({'task': task, 'data': payload}, ensure_ascii=False)
     if len(message) > 160000:
@@ -70,16 +120,19 @@ async def call_model(provider, task, payload):
         url = base + '/chat/completions'
         if key:
             headers['Authorization'] = 'Bearer ' + key
-        body = {'model':provider['model'],'messages':[{'role':'system','content':SYSTEM},{'role':'user','content':message}],'max_completion_tokens':limit}
+        body = {'model':provider['model'],'messages':[{'role':'system','content':SYSTEM},{'role':'user','content':message}],output_parameter(provider):limit}
     try:
         async with asyncio.timeout(timeout_seconds), httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=min(20, timeout_seconds)), follow_redirects=False) as client:
             response = await client.post(url, headers=headers, json=body)
             # Some OpenAI-compatible gateways only accept max_tokens.
-            if protocol == 'openai' and response.status_code == 400 and 'max_completion_tokens' in response.text[:4000]:
-                body['max_tokens'] = body.pop('max_completion_tokens')
-                response = await client.post(url, headers=headers, json=body)
+            if protocol=='openai' and response.status_code==400:
+                selected=next(name for name in ('max_completion_tokens','max_tokens') if name in body)
+                if rejected_parameter(response,selected):
+                    alternate='max_tokens' if selected=='max_completion_tokens' else 'max_completion_tokens'
+                    body[alternate]=body.pop(selected)
+                    response=await client.post(url,headers=headers,json=body)
             if response.status_code >= 300:
-                raise ModelError(f'接口返回 HTTP {response.status_code}；请检查协议、地址、模型名、额度或访问权限（响应正文不记录，以免泄露密钥）')
+                raise http_error(response,provider,body)
             data = response.json()
             usage=usage_metrics(data,protocol)
             if protocol == 'anthropic':
