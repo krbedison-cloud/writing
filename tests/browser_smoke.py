@@ -24,7 +24,7 @@ from app.reference_policy import is_short_comment, SHORT_COMMENT_POLICY
 from test_reference_policy import COMMENT
 from test_essay_policy import essay_fixture
 from test_reference_plan import PLAN
-from app.grading_prompts import ESSAY_CALIBRATION
+from app.grading_prompts import ESSAY_CALIBRATION, PRACTICAL_CALIBRATION
 
 counts={}
 received_contexts=[]
@@ -43,6 +43,7 @@ class MockModel(BaseHTTPRequestHandler):
             if payload['question']['kind']=='essay':
                 assert payload['calibration']==ESSAY_CALIBRATION
                 assert payload['reference_paper_spec']['word_min']==1001
+            if payload['question']['kind']=='practical':assert payload['calibration']==PRACTICAL_CALIBRATION
             received_contexts.append(payload['question'])
             counts[model]=counts.get(model,0)+1
             if model=='coach-b' and counts[model]==1:
@@ -74,6 +75,7 @@ class MockModel(BaseHTTPRequestHandler):
                 q['word_max']=str(q['word_max'])+'字'
             result={'data':result}
         elif task.startswith('汇总'):
+            if payload['question']['kind']=='practical':assert payload['calibration']==PRACTICAL_CALIBRATION
             result=dict(analysis='模拟汇总：各模型独立批改已完成，建议加强材料要点的分类与表达。',consensus=['需要更加具体的材料支撑'],disagreements=['评分存在一定分差'],action_plan=[f'训练{i}：先列出要点，再用短句组织' for i in range(12)])
         elif task.startswith('基于全部'):
             result=dict(analysis='模拟历史画像：已分析全部历史摘要，当前应加强材料运用与结构表达。'*50,strengths=['能够持续完成练习']*12,weaknesses=['要点提炼有待加强']*12,action_plan=[f'训练{i}：每天复盘一个遗漏要点' for i in range(12)])
@@ -458,6 +460,18 @@ def main():
                         page.locator('[data-action="regenerate-reference"][data-direction="more"]').click()
                         expect(page.locator('.reference-version option')).to_have_count(2,timeout=20000)
                         expect(page.locator('[data-action="review-tab"].active')).to_contain_text('coach-b')
+                    if index==1:
+                        expect(page.get_by_text('应用文30分训练校准：',exact=False)).to_be_visible()
+                        assert all(g['calibration_policy']=='practical-v1' for g in a['grades'])
+                        legacy=json.loads(json.dumps(a))
+                        for g in legacy['grades']:g.pop('calibration_policy',None)
+                        pattern='**/api/attempts/'+a['id']
+                        page.route(pattern,lambda route:route.fulfill(json=legacy))
+                        page.reload()
+                        expect(page.get_by_text('本记录含未使用新版应用文分档标准的评分。',exact=False)).to_be_visible()
+                        expect(page.get_by_text('应用文30分训练校准：',exact=False)).to_have_count(0)
+                        page.unroute(pattern);page.reload()
+                        expect(page.get_by_text('应用文30分训练校准：',exact=False)).to_be_visible()
                     if index==1 and is_short_comment(expected['questions'][index]):
                         expect(page.get_by_text('短评形式检查：通过',exact=True)).to_be_visible()
                         before=httpx.get(base+'/api/attempts/'+a['id']).json()

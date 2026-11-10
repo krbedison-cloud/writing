@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh | bash
 ```
 
-安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.24` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
+安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.25` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
 
 配置保存在 `~/shenlun-studio/.env`，程序只监听本机 `18086` 端口；数据使用 Docker 数据卷 `shenlun-studio-data`。安装脚本会输出实际访问地址和停止命令。重复运行安装命令不会覆盖已有 `.env`；如版本配置文件已有人工修改，会停止而不是覆盖。发布的新版本可以通过再次执行安装命令更新，既有数据保留。
 
@@ -39,7 +39,7 @@ SHENLUN_DIR="$HOME/Applications/shenlun-studio" bash install-shenlun.sh
 公开镜像可直接拉取：
 
 ```bash
-docker pull ghcr.io/krbedison-cloud/writing:v0.1.24
+docker pull ghcr.io/krbedison-cloud/writing:v0.1.25
 ```
 
 GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架构镜像并创建对应标签的 Release。发布新版本时同步更新 VERSION、安装脚本默认版本与部署配置。GHCR 首次创建的包可能是私有的；仓库拥有者可到 GitHub 的 Packages → writing → Package settings 将包设为 Public，之后无需登录即可拉取。即使没有更改包的可见性，上面的安装器仍能使用公开 Release 中的预构建 Docker 镜像完成安装，不必登录 GHCR。
@@ -49,7 +49,7 @@ GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架
 在运行 Docker Desktop 的 Mac mini 上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.24/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.25/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
 ```
 
 安装器会保留已有数据和其他配置，持久设置 `APP_BIND=0.0.0.0`、`ALLOW_LAN=1` 以及指定端口。Docker 会在 Mac 所有 IPv4 接口监听 `18086`，应用允许以私有局域网 IP 访问；原来的主机白名单和同源写入检查仍有效。IP 变化后通常不需要重新配置白名单。
@@ -63,7 +63,7 @@ Mac 防火墙如提示 Docker 接收入站连接，选择允许。设备需要�
 恢复仅本机访问：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.24/install.sh | SHENLUN_LAN=0 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.25/install.sh | SHENLUN_LAN=0 bash
 ```
 
 未指定 `SHENLUN_LAN` 时，保留现有的访问模式。
@@ -282,3 +282,8 @@ API 辅助识别兼容数字年份、中文训练题型、空值字数、文字�
 智谱官方GLM-5.3默认思考强度为max，可能是思考耗时较长的来源之一。“模型设置”可选择服务商默认、low、high、max；旧配置默认不变，不自动降低推理强度。只有该官方模型发送reasoning_effort字段，其他接口不发送。low更快但可能减少推理深度，可按需求选择high或max。输出上限和超时设置不变。参考：https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3 。
 
 接口编辑界面只在协议为 OpenAI 兼容、地址为智谱官方且模型为 GLM-5.3 时显示思考强度。DS、Kimi、第三方代理及其他模型不再显示智谱选项，也不发送该参数；修改协议、地址或模型后即时更新显示。
+
+
+应用文30分评分校准：继续以本题材料与任务踩点给分，同义或有效抽象概括同等给分，同一缺陷不重复扣分。短评以17–19分（框架结构基本正确但语言欠准确简练、存在漏点）、20–22分（论点总结正确、能概括案例、评论基本准确）、23–25分（开头、段首观点、案例运用、评论与结尾均更出色）为质量参照；25分以上仅用于有充分原答证据的特别优秀答案。其他应用文按相同质量层次类推，以各自任务、对象、信息与格式判断，不强加短评的对仗、案例或升华。
+
+分档为自定训练标准，不设17分保底或25分封顶，不统一打折，也不先定档倒推扣分。每位教练和主模型汇总都收到同一校准，程序仍保留各模型实际合法分数并计算算术均分。标准每次只作为一个独立字段发送，不增加API调用。新批改标记为`practical-v1`；旧记录和重试中已经成功的评分保留，旧标准记录会提示，新版范文重写不会改分。

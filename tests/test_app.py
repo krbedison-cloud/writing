@@ -291,6 +291,93 @@ class AppTests(unittest.TestCase):
         self.assertEqual(a['mean_score'],39)
         self.assertEqual(a['grades'][0]['result']['score'],39)
 
+    def test_practical_calibration_reaches_each_coach_and_summary_for_each_genre(self):
+        from app.grading_prompts import PRACTICAL_CALIBRATION, DEFAULT_CALIBRATION
+        from test_reference_policy import COMMENT
+        other=self.add_model('other')
+        p=self.make_paper()
+        async def practical_model(provider,task,data):
+            if task.startswith('独立批改'):
+                result=grade(21 if provider['id']==self.master else 22)
+                result['high_score_answer']=COMMENT
+                return result
+            return await fake_model(provider,task,data)
+        for prompt in ['根据资料1写一则短评，不超过600字。','根据资料1拟写一份工作通知，不超过600字。','根据资料1拟写一份发言提纲，不超过600字。']:
+            with self.subTest(prompt=prompt):
+                p['questions'][1]['prompt']=prompt
+                p=self.client.put('/api/papers/'+p['id'],json=p).json()
+                with patch('app.service.call_model',side_effect=practical_model) as mock:
+                    a=self.submit(p,1,[self.master,other['id']])
+                self.assertEqual(a['status'],'completed');self.assertEqual(a['mean_score'],21.5)
+                self.assertEqual({g['calibration_policy'] for g in a['grades']},{'practical-v1'})
+                grading=[c for c in mock.call_args_list if c.args[1].startswith('独立批改')]
+                summaries=[c for c in mock.call_args_list if c.args[1].startswith('汇总')]
+                self.assertEqual((len(grading),len(summaries)),(2,1))
+                for call in grading+summaries:
+                    task,data=call.args[1:]
+                    self.assertEqual(data['calibration'],PRACTICAL_CALIBRATION)
+                    self.assertEqual(data['question']['prompt'],prompt)
+                    self.assertEqual(data['question']['materials'],a['question_snapshot']['materials'])
+                    self.assertEqual(data['answer'],a['answer'])
+                    self.assertNotIn(PRACTICAL_CALIBRATION,task)
+                    self.assertEqual(json.dumps(data,ensure_ascii=False).count(PRACTICAL_CALIBRATION),1)
+                self.assertTrue(all(c.args[2]['full_score']==30 for c in grading))
+        a=self.submit(p,0)
+        self.assertNotIn('calibration_policy',a['grades'][0])
+        summary_calls=[c for c in self.mock.call_args_list if c.args[1].startswith('汇总')]
+        self.assertNotIn('calibration',summary_calls[-1].args[2])
+        grade_calls=[c for c in self.mock.call_args_list if c.args[1].startswith('独立批改')]
+        self.assertEqual(grade_calls[-1].args[2]['calibration'],DEFAULT_CALIBRATION)
+
+    def test_practical_calibration_has_no_cap_floor_or_legacy_score_migration(self):
+        p=self.make_paper()
+        old=None
+        for score in (15,27.5):
+            async def scored(provider,task,data):
+                if task.startswith('独立批改'):return grade(score)
+                return await fake_model(provider,task,data)
+            with patch('app.service.call_model',side_effect=scored):a=self.submit(p,1)
+            self.assertEqual(a['mean_score'],score)
+            self.assertEqual(a['grades'][0]['result']['score'],score)
+            if old is None:
+                old=self.app.state.service.db.get('attempts',a['id'])
+                old['grades'][0].pop('calibration_policy')
+                self.app.state.service.db.put('attempts',old['id'],old,old['created_at'])
+        stored=self.client.get('/api/attempts/'+old['id']).json()
+        self.assertEqual(stored['mean_score'],15)
+        self.assertEqual(stored['grades'][0]['result'],old['grades'][0]['result'])
+        self.assertNotIn('calibration_policy',stored['grades'][0])
+        self.assertEqual(stored['answer'],old['answer'])
+
+    def test_practical_retry_calibrates_failed_coach_without_relabeling_success(self):
+        from app.grading_prompts import PRACTICAL_CALIBRATION
+        failed=self.add_model('bad')
+        a=self.submit(self.make_paper(),1,[self.master,failed['id']])
+        self.assertEqual(a['status'],'partial')
+        saved=self.app.state.service.db.get('attempts',a['id'])
+        success=next(g for g in saved['grades'] if g['status']=='completed')
+        success.pop('calibration_policy')
+        self.app.state.service.db.put('attempts',a['id'],saved,saved['created_at'])
+        async def retry_model(provider,task,data):
+            if task.startswith('独立批改'):return grade(22)
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=retry_model) as mock:
+            r=self.client.post('/api/attempts/'+a['id']+'/retry',json={'provider_id':failed['id']})
+            self.assertEqual(r.status_code,200,r.text)
+            self.assertEqual(self.wait_job(r.json()['job_id'])['status'],'completed')
+        updated=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(updated['status'],'completed');self.assertEqual(updated['mean_score'],24)
+        kept=next(g for g in updated['grades'] if g['provider_id']==self.master)
+        self.assertEqual(kept['result'],success['result'])
+        self.assertNotIn('calibration_policy',kept)
+        retried=next(g for g in updated['grades'] if g['provider_id']==failed['id'])
+        self.assertEqual(retried['calibration_policy'],'practical-v1')
+        calls=[c for c in mock.call_args_list if c.args[1].startswith('独立批改')]
+        self.assertEqual(len(calls),1);self.assertEqual(calls[0].args[0]['id'],failed['id'])
+        self.assertEqual(calls[0].args[2]['calibration'],PRACTICAL_CALIBRATION)
+        summary=next(c.args[2] for c in mock.call_args_list if c.args[1].startswith('汇总'))
+        self.assertEqual(summary['calibration'],PRACTICAL_CALIBRATION)
+
     def test_reference_plans_stay_with_their_version_and_out_of_summary(self):
         from test_reference_plan import PLAN
         from test_essay_policy import essay_fixture

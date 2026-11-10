@@ -12,7 +12,7 @@ from .materials import prepare_paper, model_question
 from .schemas import Grade, Synthesis, Portrait, PaperInput, ReferenceDraft, DIMENSIONS, KINDS, ReferencePlan
 from .paper import check_paper
 from .reference_policy import reference_policy, check_reference_style, needs_reference_repair, reference_paper_spec, reference_payload, is_essay
-from .grading_prompts import QUESTION_FIRST, GRADING_TASK, REFERENCE_FIELDS, REFERENCE_RULES, PLAN_RULES, calibration
+from .grading_prompts import QUESTION_FIRST, GRADING_TASK, REFERENCE_FIELDS, REFERENCE_RULES, PLAN_RULES, calibration, calibration_policy
 from .portrait_summary import BRIEF_POLICY, NOTES_VERSION, readable_portrait, brief_points, rewrite_evidence
 from .output_validation import validation_message
 from .import_validation import FORMAT, normalize_import, import_errors
@@ -260,7 +260,7 @@ class Service:
                 return
             snapshot = next(p for p in a['providers'] if p['id'] == pid)
             g = dict(provider_id=pid, name=snapshot['name'], model=snapshot['model'], status='running', grading_policy=GRADING_POLICY, queued_at=now())
-            if is_essay(q):g['calibration_policy']='essay-v1'
+            if policy:=calibration_policy(q):g['calibration_policy']=policy
             progress(g,'queued')
             try:
                 p = self.provider(pid)
@@ -302,7 +302,7 @@ class Service:
                     master=self.provider(a['master']['id'])
                     if any(master[k]!=a['master'][k] for k in ('model','base_url','protocol')):
                         raise ModelError('汇总接口配置已更新，请重试汇总或更换汇总接口')
-                    raw = await self.ask(master, '汇总多位教练的批改，先以本题题干、材料和用户原答核验每位教练的审题与扣分依据；若有文体误判、强加格式或引用无关材料，须明确指出并排除其诊断影响，不把错误当共识。返回 {analysis,consensus,disagreements,action_plan}。analysis用300–600字给出关键诊断，其余为字符串数组。consensus和disagreements各最多5条，action_plan最多5条，每条只给一个具体动作，优先级从高到低，避免重复。识别共识和分歧，检验批评是否有原文证据，不盲信多数。均分已由程序计算，不改分。优先给出下一次能执行的修改动作。', {'question':q,'answer':a['answer'],'answer_layout':check_paper(a['answer'],q['paper_spec']),'mean_score':a['mean_score'],'successful_count':len(good),'requested_count':len(a['providers']),**({'calibration':calibration(q)} if is_essay(q) else {}), 'reviews':[{k:g[k] for k in ('provider_id','name','model','status')} | {'result':{k:v for k,v in g['result'].items() if k not in ('high_score_answer','high_score_self_check','high_score_plan')}} for g in good]})
+                    raw = await self.ask(master, '汇总多位教练的批改，先以本题题干、材料和用户原答核验每位教练的审题与扣分依据；若有文体误判、强加格式或引用无关材料，须明确指出并排除其诊断影响，不把错误当共识。有calibration时核验得分与档次依据是否一致；指出偏松或偏严须引原答证据。返回 {analysis,consensus,disagreements,action_plan}。analysis用300–600字给出关键诊断，其余为字符串数组。consensus和disagreements各最多5条，action_plan最多5条，每条只给一个具体动作，优先级从高到低，避免重复。识别共识和分歧，检验批评是否有原文证据，不盲信多数。均分已由程序计算，不改分。优先给出下一次能执行的修改动作。', {'question':q,'answer':a['answer'],'answer_layout':check_paper(a['answer'],q['paper_spec']),'mean_score':a['mean_score'],'successful_count':len(good),'requested_count':len(a['providers']),**({'calibration':calibration(q)} if calibration_policy(q) else {}), 'reviews':[{k:g[k] for k in ('provider_id','name','model','status')} | {'result':{k:v for k,v in g['result'].items() if k not in ('high_score_answer','high_score_self_check','high_score_plan')}} for g in good]})
                     a['synthesis']=Synthesis.model_validate(raw).model_dump();a['summary_status']='completed'
                 except Exception as exc:
                     a.update(summary_status='failed',error=public_error(exc))
