@@ -40,8 +40,10 @@ class RequestPerformanceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual('reasoning_effort' in body,sent)
                 if sent:self.assertEqual(body['reasoning_effort'],'high')
                 message=body['messages'][-1]['content']
-                self.assertTrue(message.startswith('{"data":{"question":'))
+                self.assertTrue(message.startswith('{"task":"任务","data":{"question":'))
                 self.assertEqual(json.loads(message)['data']['question']['materials'],' 保留材料原文\n以及换行。')
+                self.assertEqual(list(json.loads(message)['data'])[-1],'answer')
+                self.assertEqual(json.loads(message)['data']['answer'],'原答')
                 return httpx.Response(200,json={'choices':[{'message':{'content':'{"ok":true}'}}]})
             config=dict(base_url=base,model=model,protocol='openai',api_key='secret',max_tokens=32768,reasoning_effort=effort)
             with patch('app.llm.httpx.AsyncClient',side_effect=lambda **kw:original(transport=httpx.MockTransport(handle),**kw)):

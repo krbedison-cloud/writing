@@ -129,7 +129,7 @@ class Service:
         if not needs_reference_repair(reference):
             return None
         try:
-            raw = await self.ask(provider, '范文校正。'+QUESTION_FIRST+REFERENCE_FIELDS+REFERENCE_RULES+reference_policy(q)+PLAN_RULES, {'question':q,'previous_answer':reference['answer'],'actual_check':reference['layout_check'], **reference_payload(q), **({'style_check':reference['style_check']} if reference.get('style_check') else {})})
+            raw = await self.ask(provider, '范文校正。'+QUESTION_FIRST+REFERENCE_FIELDS+REFERENCE_RULES+reference_policy(q)+PLAN_RULES, {'question':q,'previous_reference':reference['answer'],'actual_check':reference['layout_check'], **reference_payload(q), **({'style_check':reference['style_check']} if reference.get('style_check') else {})})
             draft = ReferenceDraft.model_validate(raw).model_dump()
             return self.reference(draft,q,direction='auto_repair')
         except Exception as exc:
@@ -158,7 +158,10 @@ class Service:
             task = '单独重写高分范文。用户认为上版字数少了，请适度补充有效要点与论证。' if direction=='more' else '单独重写高分范文。用户认为上版字数多了，请压缩冗余、合并不必要换行。'
             if direction=='rewrite':
                 task='单独重写高分范文。按本题当前范文要求重新生成，字数以原题和纸面限制为准。'
-            raw = await self.ask(provider, task+QUESTION_FIRST+REFERENCE_FIELDS+REFERENCE_RULES+reference_policy(q)+PLAN_RULES, {'question':q,'previous_answer':previous['answer'],'previous_check':previous['layout_check'],'target_word_count':target,'direction':direction, **reference_payload(q)})
+            data={'question':q,'direction':direction, **reference_payload(q)}
+            if direction!='rewrite':
+                data.update(previous_reference=previous['answer'],previous_check=previous['layout_check'],target_word_count=target)
+            raw = await self.ask(provider, task+QUESTION_FIRST+REFERENCE_FIELDS+REFERENCE_RULES+reference_policy(q)+PLAN_RULES, data)
             candidate = self.reference(ReferenceDraft.model_validate(raw).model_dump(),q,direction)
             versions.append(candidate)
             repaired = await self.repair_reference(provider,q,candidate)

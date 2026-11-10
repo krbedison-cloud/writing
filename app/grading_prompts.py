@@ -1,11 +1,14 @@
 """Compact shared prompts. Score calibration is sent once in its own field."""
-QUESTION_FIRST = '以question.prompt审题，依question.materials核验原答；kind只表示20/30/50分训练档，不代表文体。任务、对象、内容、格式和字数按题干，不强加标题、称呼、落款、日期；不套其他题模板，歧义须说明。'
+QUESTION_FIRST = '以question.prompt审题、以question.materials为内容依据；kind只表示20/30/50分训练档，不代表文体。任务、对象、内容、格式和字数按题干，不强加标题、称呼、落款、日期；不套其他题模板，歧义须说明。'
 GRADING_TASK = ('独立批改。返回JSON：'
- '{task_analysis:{task,genre,requirements,material_basis},score,dimensions,strengths,weaknesses,suggestions,evidence,high_score_answer,high_score_plan:{framework,progression,material_use},high_score_self_check:{word_count,used_rows,complies,format_note}}。'
+ '{task_analysis:{task,genre,requirements,material_basis},high_score_answer,high_score_plan:{framework,progression,material_use},high_score_self_check:{word_count,used_rows,complies,format_note},score,dimensions,strengths,weaknesses,suggestions,evidence}。'
+ '先据题干、材料独立生成范文及构思说明，再评价answer；评分校准calibration仅评用户原答，不限制范文质量。'
  'task/genre为题干任务/文体，requirements/material_basis为要求/材料依据。所有列表为字符串数组，评语通常2–4条，无优缺点或建议时可空；evidence不可空，须引用原答解释评价。'
- 'score按full_score及calibration；dimensions用给定六维中文名为键、0–100数字为值，不嵌套说明。评语简明去重，范文完整纯文本，不用Markdown或字数附注。'+QUESTION_FIRST)
-REFERENCE_FIELDS = '仅重写范文不评分，返回{high_score_answer,high_score_plan:{framework,progression,material_use},high_score_self_check:{word_count,used_rows,complies,format_note}}。范文纯文本，无Markdown或字数附注。'
-REFERENCE_RULES = ('范文按reference_paper_spec（缺省用question.paper_spec）做一次字数及占格自检，不反复试算；rules同名字段优先，否则用question.paper_spec.rules。'
+ 'score按full_score及calibration；dimensions用给定六维中文名为键、0–100数字为值，不嵌套说明。评语简明去重。'+QUESTION_FIRST)
+REFERENCE_FIELDS = '仅生成范文不评分，返回{high_score_answer,high_score_plan:{framework,progression,material_use},high_score_self_check:{word_count,used_rows,complies,format_note}}。'
+REFERENCE_RULES = ('范文独立依据question的题干、材料与给定范文规则构思，保留既定文体、框架与格式要求；用户answer仅供批改，不作范文底稿、提纲、事实来源或要点边界，不沿用其错误与遗漏，也不为求不同避开题内正确要点。'
+ '材料外案例仅按专门范文规则的既有例外。previous_reference若提供，是模型旧范文，仅用于校正或增减篇幅，不是用户原答；始终回题干、材料核验。范文完整纯文本，无Markdown或字数附注。'
+ '范文完成后按reference_paper_spec（缺省用question.paper_spec）自检，保留必要构思与论证，只返回最终自检结果；rules同名字段优先，否则用question.paper_spec.rules。'
  '标题标点计字，空格、缩进、换行损失计格，缩进用全角空格；须同时满足字数上下限与纸面容量，format_note只写一句自检结论。')
 DEFAULT_CALIBRATION = '依据本题制定细则，优秀须切题且有充分材料或论证支撑；具体说明缺失和扣分，不因语言华丽忽略离题。非官方阅卷。'
 PRACTICAL_CALIBRATION = ('应用文30分训练校准（自定标准，仅评用户原答）：仍按本题材料、任务制定要点及分值，踩点给分；同义表达、有效抽象概括同等给分，重复内容不重复计分，同一缺陷不重复扣分。'

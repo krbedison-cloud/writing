@@ -24,7 +24,7 @@ from app.reference_policy import is_short_comment, SHORT_COMMENT_POLICY
 from test_reference_policy import COMMENT
 from test_essay_policy import essay_fixture
 from test_reference_plan import PLAN
-from app.grading_prompts import ESSAY_CALIBRATION, PRACTICAL_CALIBRATION
+from app.grading_prompts import ESSAY_CALIBRATION, PRACTICAL_CALIBRATION, REFERENCE_RULES
 
 counts={}
 received_contexts=[]
@@ -38,6 +38,8 @@ class MockModel(BaseHTTPRequestHandler):
             if task.startswith('独立批改'):counts[model]=counts.get(model,0)+1
             self.send_response(402);self.end_headers();self.wfile.write(b'quota exhausted');return
         if task.startswith('独立批改'):
+            assert task.count(REFERENCE_RULES)==1
+            assert 'answer' in payload
             if model=='coach-c':time.sleep(13)
             assert (SHORT_COMMENT_POLICY in task)==is_short_comment(payload['question'])
             if payload['question']['kind']=='essay':
@@ -53,6 +55,11 @@ class MockModel(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({'choices':[{'finish_reason':'length','message':{'content':'partial'}}],'usage':{'completion_tokens':6000,'completion_tokens_details':{'reasoning_tokens':5900}}}).encode());return
             result=dict(score=payload['full_score']-(4 if model=='coach-a' else 6),dimensions={k:70 for k in DIMENSIONS},strengths=['观点清晰'],weaknesses=['材料要点尚有遗漏'],suggestions=['分类概括关键措施'],evidence=['原答案“加强建设”需要展开具体措施'],high_score_plan=PLAN,high_score_answer='这是模拟接口生成的参考答案，仅用于验证调用与存档流程，不是真实模型批改。',task_analysis=dict(task=payload['question']['prompt'],genre='按本题题干审题',requirements=[payload['question']['prompt']],material_basis=[payload['question']['materials'][:80]]))
         elif task.startswith(('范文校正','单独重写高分范文')):
+            assert task.count(REFERENCE_RULES)==1
+            assert 'answer' not in payload and 'previous_answer' not in payload
+            if payload.get('direction')=='rewrite':
+                assert 'previous_reference' not in payload and 'previous_check' not in payload and 'target_word_count' not in payload
+            else:assert 'previous_reference' in payload
             assert (SHORT_COMMENT_POLICY in task)==is_short_comment(payload['question'])
             received_reference_contexts.append(payload['question'])
             spec=payload.get('reference_paper_spec') or payload['question']['paper_spec'];header='模拟接口生成的参考范文'

@@ -218,6 +218,16 @@ class AppTests(unittest.TestCase):
             for call in relevant:
                 self.assertIn(SHORT_COMMENT_POLICY,call.args[1])
                 self.assertEqual(call.args[2]['question']['materials'],p['questions'][1]['materials'])
+                from app.grading_prompts import REFERENCE_RULES
+                self.assertEqual(call.args[1].count(REFERENCE_RULES),1)
+                if not call.args[1].startswith('独立批改'):
+                    self.assertNotIn('answer',call.args[2])
+                    self.assertNotIn('previous_answer',call.args[2])
+                    if call.args[2].get('direction')=='rewrite':
+                        self.assertNotIn('previous_reference',call.args[2])
+                        self.assertNotIn('previous_check',call.args[2])
+                        self.assertNotIn('target_word_count',call.args[2])
+                    else:self.assertIn('previous_reference',call.args[2])
             self.assertNotIn(SHORT_COMMENT_POLICY,next(c.args[1] for c in mock.call_args_list if c.args[1].startswith('汇总')))
         updated=self.client.get('/api/attempts/'+a['id']).json()
         self.assertEqual(updated['answer'],a['answer'])
@@ -451,6 +461,41 @@ class AppTests(unittest.TestCase):
         self.assertEqual(updated['grades'][0]['result']['high_score_answer'],original)
         refs=updated['grades'][0]['references'];self.assertEqual(len(refs),3)
         self.assertTrue(refs[-1]['layout_check']['valid'])
+        self.assertEqual(self.client.get('/api/profile').json()['signature'],signature)
+
+    def test_fresh_reference_request_excludes_original_answer_and_all_previous_draft_content(self):
+        from app.grading_prompts import REFERENCE_RULES,GRADING_TASK
+        from test_reference_plan import PLAN
+        old_draft='旧范文草稿：OLD_REFERENCE_ONLY_MARKER 这是模型先前输出的文章。'
+        async def model(provider,task,data):
+            if task.startswith('独立批改'):
+                result=grade(16);result['high_score_answer']=old_draft;return result
+            if task.startswith('单独重写高分范文'):
+                self.assertEqual(set(data),{'question','direction'})
+                self.assertNotIn(old_draft,json.dumps(data,ensure_ascii=False))
+                self.assertNotIn('加强基础建设，推动绿色创新与产业发展。',json.dumps(data,ensure_ascii=False))
+                return dict(high_score_answer='新范文依据题干材料独立概括创新与绿色发展的做法。',high_score_plan=PLAN)
+            return await fake_model(provider,task,data)
+        p=self.make_paper()
+        with patch('app.service.call_model',side_effect=model) as mock:
+            a=self.submit(p)
+            signature=self.client.get('/api/profile').json()['signature']
+            initial=[c for c in mock.call_args_list if c.args[1].startswith('独立批改')]
+            self.assertEqual(len(initial),1)
+            self.assertEqual(initial[0].args[2]['answer'],a['answer'])
+            self.assertIn(REFERENCE_RULES,initial[0].args[1])
+            self.assertLess(GRADING_TASK.index('high_score_answer'),GRADING_TASK.index(',score,'))
+            job=self.client.post('/api/attempts/'+a['id']+'/references',json={'provider_id':self.master,'direction':'rewrite'}).json()
+            self.assertEqual(self.wait_job(job['id'])['status'],'completed')
+        calls=[c for c in mock.call_args_list if c.args[1].startswith('单独重写高分范文')]
+        self.assertEqual(len(calls),1)
+        self.assertEqual(calls[0].args[2]['question']['materials'],a['question_snapshot']['materials'])
+        updated=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(updated['answer'],a['answer']);self.assertEqual(updated['mean_score'],16)
+        self.assertEqual(updated['grades'][0]['result'],a['grades'][0]['result'])
+        refs=updated['grades'][0]['references'];self.assertEqual(len(refs),2)
+        self.assertEqual(refs[0]['answer'],old_draft)
+        self.assertEqual(refs[-1]['plan'],PLAN)
         self.assertEqual(self.client.get('/api/profile').json()['signature'],signature)
     def test_invalid_reference_is_repaired_once_without_changing_grade(self):
         p=self.make_paper()
