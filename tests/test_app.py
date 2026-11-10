@@ -301,6 +301,85 @@ class AppTests(unittest.TestCase):
         self.assertEqual(a['mean_score'],39)
         self.assertEqual(a['grades'][0]['result']['score'],39)
 
+    def test_essay_material_priorities_survive_source_edits_and_all_reference_paths(self):
+        from test_materials import MATERIALS
+        from test_essay_policy import essay_fixture
+        from test_reference_plan import PLAN
+        from app.reference_policy import ESSAY_MATERIAL_PRIORITY
+        p=self.make_paper();p['materials']=MATERIALS
+        p['questions'][0]['prompt']='根据资料1、2，概括措施。'
+        p['questions'][1]['prompt']='根据资料3、4，写一则短评。'
+        p['questions'][2].update(material_mode='all')
+        p=self.client.put('/api/papers/'+p['id'],json=p).json()
+        async def model(provider,task,data):
+            if task.startswith('独立批改'):
+                result=grade(35);result['high_score_answer']=essay_fixture(size=236);return result
+            if task.startswith(('范文校正','单独重写高分范文')):return dict(high_score_answer=essay_fixture(6),high_score_plan=PLAN)
+            if task.startswith('范文构思讲解'):return PLAN
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=model) as mock:
+            a=self.submit(p,2)
+            priority=a['question_snapshot']['reference_material_priority']
+            self.assertEqual(priority['preferred_ids'],list(range(5,10)))
+            self.assertEqual(priority['secondary_ids'],[1,2,3,4])
+            p['questions'][0]['prompt']='根据资料5、6，概括措施。'
+            p=self.client.put('/api/papers/'+p['id'],json=p).json()
+            self.assertNotEqual(p['questions'][2]['reference_material_priority'],priority)
+            for direction in ('rewrite','more','less'):
+                job=self.client.post('/api/attempts/'+a['id']+'/references',json={'provider_id':self.master,'direction':direction}).json()
+                self.assertEqual(self.wait_job(job['id'])['status'],'completed')
+            job=self.client.post('/api/attempts/'+a['id']+'/reference-plan',json={'provider_id':self.master}).json()
+            self.assertEqual(self.wait_job(job['id'])['status'],'completed')
+        for call in mock.call_args_list:
+            task,data=call.args[1:]
+            if task.startswith(('独立批改','范文校正','单独重写高分范文','范文构思讲解')):
+                self.assertEqual(data['question']['reference_material_priority'],priority)
+                self.assertEqual(data['question']['materials'],MATERIALS)
+                self.assertEqual(task.count(ESSAY_MATERIAL_PRIORITY),1)
+                self.assertNotIn(p['questions'][0]['prompt'],json.dumps(data,ensure_ascii=False))
+            elif task.startswith('汇总'):
+                self.assertNotIn('reference_material_priority',data['question'])
+                self.assertNotIn(ESSAY_MATERIAL_PRIORITY,task)
+        updated=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(updated['question_snapshot'],a['question_snapshot'])
+        self.assertEqual(updated['mean_score'],35);self.assertEqual(updated['answer'],a['answer'])
+        self.assertTrue(all(r['material_priority']==priority for r in updated['grades'][0]['references']))
+
+    def test_legacy_essay_priority_uses_only_matching_current_paper_without_rewriting_history(self):
+        from test_materials import MATERIALS
+        from test_essay_policy import essay_fixture
+        p=self.make_paper();p['materials']=MATERIALS
+        p['questions'][0]['prompt']='根据资料1、2，概括措施。'
+        p['questions'][1]['prompt']='根据资料3、4，写一则短评。'
+        p['questions'][2].update(material_mode='all')
+        p=self.client.put('/api/papers/'+p['id'],json=p).json()
+        a=self.submit(p,2);db=self.app.state.service.db
+        old=db.get('attempts',a['id']);old['question_snapshot'].pop('reference_material_priority')
+        for g in old['grades']:
+            for ref in g['references']:ref.pop('material_priority',None)
+        db.put('attempts',old['id'],old,old['created_at'])
+        seen=[]
+        async def model(provider,task,data):
+            if task.startswith('单独重写高分范文'):
+                seen.append(data['question']['reference_material_priority'])
+                return dict(high_score_answer=essay_fixture())
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=model):
+            for changed in (False,True):
+                if changed:
+                    p['materials']=MATERIALS+'\n材料10\n源试卷新增的材料。'
+                    self.client.put('/api/papers/'+p['id'],json=p)
+                job=self.client.post('/api/attempts/'+a['id']+'/references',json={'provider_id':self.master,'direction':'rewrite'}).json()
+                self.assertEqual(self.wait_job(job['id'])['status'],'completed')
+        self.assertEqual(seen[0]['preferred_ids'],list(range(5,10)))
+        self.assertEqual(seen[0]['source'],'current_paper')
+        self.assertFalse(seen[1]['available'])
+        updated=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(updated['question_snapshot'],old['question_snapshot'])
+        self.assertEqual(updated['mean_score'],old['mean_score'])
+        self.assertEqual(updated['grades'][0]['result'],old['grades'][0]['result'])
+        self.assertNotIn('material_priority',updated['grades'][0]['references'][0])
+
     def test_practical_calibration_reaches_each_coach_and_summary_for_each_genre(self):
         from app.grading_prompts import PRACTICAL_CALIBRATION, DEFAULT_CALIBRATION
         from test_reference_policy import COMMENT

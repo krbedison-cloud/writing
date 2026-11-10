@@ -44,6 +44,7 @@ class MockModel(BaseHTTPRequestHandler):
             assert (SHORT_COMMENT_POLICY in task)==is_short_comment(payload['question'])
             if payload['question']['kind']=='essay':
                 assert payload['calibration']==ESSAY_CALIBRATION
+                assert 'reference_material_priority' in payload['question']
                 assert payload['reference_paper_spec']['word_min']==1001
             if payload['question']['kind']=='practical':assert payload['calibration']==PRACTICAL_CALIBRATION
             received_contexts.append(payload['question'])
@@ -55,6 +56,7 @@ class MockModel(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({'choices':[{'finish_reason':'length','message':{'content':'partial'}}],'usage':{'completion_tokens':6000,'completion_tokens_details':{'reasoning_tokens':5900}}}).encode());return
             result=dict(score=payload['full_score']-(4 if model=='coach-a' else 6),dimensions={k:70 for k in DIMENSIONS},strengths=['观点清晰'],weaknesses=['材料要点尚有遗漏'],suggestions=['分类概括关键措施'],evidence=['原答案“加强建设”需要展开具体措施'],high_score_plan=PLAN,high_score_answer='这是模拟接口生成的参考答案，仅用于验证调用与存档流程，不是真实模型批改。',task_analysis=dict(task=payload['question']['prompt'],genre='按本题题干审题',requirements=[payload['question']['prompt']],material_basis=[payload['question']['materials'][:80]]))
         elif task.startswith(('范文校正','单独重写高分范文')):
+            if payload['question']['kind']=='essay':assert 'reference_material_priority' in payload['question']
             assert task.count(REFERENCE_RULES)==1
             assert 'answer' not in payload and 'previous_answer' not in payload
             if payload.get('direction')=='rewrite':
@@ -82,6 +84,7 @@ class MockModel(BaseHTTPRequestHandler):
                 q['word_max']=str(q['word_max'])+'字'
             result={'data':result}
         elif task.startswith('汇总'):
+            assert 'reference_material_priority' not in payload['question']
             if payload['question']['kind']=='practical':assert payload['calibration']==PRACTICAL_CALIBRATION
             result=dict(analysis='模拟汇总：各模型独立批改已完成，建议加强材料要点的分类与表达。',consensus=['需要更加具体的材料支撑'],disagreements=['评分存在一定分差'],action_plan=[f'训练{i}：先列出要点，再用短句组织' for i in range(12)])
         elif task.startswith('基于全部'):
@@ -492,6 +495,7 @@ def main():
                         assert new_grade['references'][-1]['style_check']['valid']
                         assert new_grade['references'][-1]['answer']==COMMENT
                     if index==2:
+                        expect(page.locator('.reference-material-priority')).to_be_visible()
                         expect(page.get_by_text('大作文形式检查：通过',exact=True)).to_be_visible()
                         expect(page.get_by_text('大作文训练校准：',exact=False)).to_be_visible()
                         latest=a['grades'][0]['references'][-1]

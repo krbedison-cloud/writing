@@ -30,6 +30,10 @@ ESSAY_REFERENCE_POLICY = ('大作文范文专用（原答按题干评分，不�
  '范文严格1001–1200字，且写进25列×48行共1200格；标题、段首缩进和换行损失均占格。建议约1050–1120字留足格式空间，target_word_count仅参考。'
  '自检段首观点、论证与材料依据，将检查简述于format_note；不能合并分论段或删必要格式来凑格。')
 
+ESSAY_MATERIAL_PRIORITY = ('同卷范文取材偏好：reference_material_priority.available为true时，preferred_ids为未被已确认前题范围涉及的本题材料，优先据此立意、构建递进框架及选择主要案例；secondary_ids为前面小题已涉及材料，尽量不用其案例或仅作辅助。'
+ '仅当优先材料不足以完整、准确支撑框架与论证时才适量补用辅助材料，构思说明逐条说明取舍与补用必要性；不为避重扭曲论点，不以材料外案例绕过可用的本题材料。'
+ '这不改变题干允许范围或用户原答评分，不能据此扣原答分；题干明确必用材料优先。available为false或优先材料为空时正常取材；unresolved_prior_questions范围不可靠，不猜测排除材料。')
+
 def is_essay(question):
     if question.get('kind')!='essay' or is_short_comment(question):return False
     prompt=re.sub(r'\s+',' ',re.sub(r'《[^》]*》','',question.get('prompt','')))
@@ -39,7 +43,7 @@ def is_essay(question):
 
 def reference_policy(question):
     if is_short_comment(question):return SHORT_COMMENT_POLICY
-    return ESSAY_REFERENCE_POLICY if is_essay(question) else ''
+    return (ESSAY_REFERENCE_POLICY+(ESSAY_MATERIAL_PRIORITY if question.get('reference_material_priority') else '')) if is_essay(question) else ''
 
 def reference_paper_spec(question):
     original=question.get('paper_spec') or paper_spec(question)

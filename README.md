@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh | bash
 ```
 
-安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.26` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
+安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.27` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
 
 配置保存在 `~/shenlun-studio/.env`，程序只监听本机 `18086` 端口；数据使用 Docker 数据卷 `shenlun-studio-data`。安装脚本会输出实际访问地址和停止命令。重复运行安装命令不会覆盖已有 `.env`；如版本配置文件已有人工修改，会停止而不是覆盖。发布的新版本可以通过再次执行安装命令更新，既有数据保留。
 
@@ -39,7 +39,7 @@ SHENLUN_DIR="$HOME/Applications/shenlun-studio" bash install-shenlun.sh
 公开镜像可直接拉取：
 
 ```bash
-docker pull ghcr.io/krbedison-cloud/writing:v0.1.26
+docker pull ghcr.io/krbedison-cloud/writing:v0.1.27
 ```
 
 GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架构镜像并创建对应标签的 Release。发布新版本时同步更新 VERSION、安装脚本默认版本与部署配置。GHCR 首次创建的包可能是私有的；仓库拥有者可到 GitHub 的 Packages → writing → Package settings 将包设为 Public，之后无需登录即可拉取。即使没有更改包的可见性，上面的安装器仍能使用公开 Release 中的预构建 Docker 镜像完成安装，不必登录 GHCR。
@@ -49,7 +49,7 @@ GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架
 在运行 Docker Desktop 的 Mac mini 上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.26/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.27/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
 ```
 
 安装器会保留已有数据和其他配置，持久设置 `APP_BIND=0.0.0.0`、`ALLOW_LAN=1` 以及指定端口。Docker 会在 Mac 所有 IPv4 接口监听 `18086`，应用允许以私有局域网 IP 访问；原来的主机白名单和同源写入检查仍有效。IP 变化后通常不需要重新配置白名单。
@@ -63,7 +63,7 @@ Mac 防火墙如提示 Docker 接收入站连接，选择允许。设备需要�
 恢复仅本机访问：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.26/install.sh | SHENLUN_LAN=0 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.27/install.sh | SHENLUN_LAN=0 bash
 ```
 
 未指定 `SHENLUN_LAN` 时，保留现有的访问模式。
@@ -294,3 +294,10 @@ API 辅助识别兼容数字年份、中文训练题型、空值字数、文字�
 “重新生成范文”请求只携带本题题干材料和范文规则，不发送用户原答、旧范文、旧范文检查或其目标字数，从题目重新构思。“字数少了/多了”和自动校正只携带模型旧范文，明确标为`previous_reference`，依原题和纸面限制调整；评分与原答案保留。专门的短评/大作文结构、前置句、案例概括、材料取舍、既有大作文补例例外、字数/占格和构思说明要求均保留。
 
 提示优化以职责分明、移除重复格式说明及不必要旧范文输入为主，保持模型思考强度、输出上限、完整材料和功能不变。请求按“任务规则→题干材料→其余规则→用户原答”组织，便于支持前缀缓存的接口复用；实际缓存、token与耗时以服务商返回为准。首次批改没有新增调用；重新生成省去一整篇旧范文输入，不承诺模型质量或耗时的固定提升幅度。
+
+
+大作文同卷取材偏好：根据本套试卷前面非大作文小题已确认的材料范围，将本题可用材料分为优先与辅助两组，不要求先练过小题。范文优先用未涉及材料构思论点、递进框架和主要案例；仅当它们不足以完整准确支撑框架与论证时，才适量补用前题材料，并在构思说明中解释必要性。题干明确必用材料优先，不为避重牺牲论点质量，也不以材料外案例绕过可用的本题材料。此偏好只用于范文，原答按原评分标准评价。
+
+优先级由程序本地计算，仅额外传递简短编号，不发送其他小题的题干、答案或重复材料，不新增API调用。人工选范围优先；人工粘贴材料须能与原编号材料完整对应，否则提示范围不可靠并正常取材，不猜测禁用。所有本题允许材料仍完整传给模型；若前题已涉及全部材料，也按本题需要正常使用。
+
+新作答保存提交时的优先级快照，后续编辑源试卷不改旧作答；各范文版本保留自己的优先级并在界面展示。旧作答没有该快照时，仅在源试卷的大作文题干与完整材料仍匹配的情况下，按当前校对范围为新范文计算，并明确标注；不匹配时正常取材，不回写旧快照、范文或评分。

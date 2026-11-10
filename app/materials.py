@@ -133,7 +133,39 @@ def prepare_paper(paper):
         p['requires_material_selection'] |= q['material_scope']['requires_choice']
         q['paper_spec'] = paper_spec(q)
         q['material_signature'] = material_signature(q['materials'])
+    from .reference_policy import is_essay
+    for q in p['questions']:
+        q.pop('reference_material_priority',None)
+        if is_essay(q):q['reference_material_priority']=essay_material_priority(p['questions'],q,blocks)
     return p
+
+
+def scoped_material_ids(question, blocks):
+    scope=question.get('material_scope',{})
+    if scope.get('requires_choice') or scope.get('mode')=='fallback':return None
+    if scope.get('mode') in ('selected','all'):
+        return scope.get('matched_ids') if blocks else None
+    if scope.get('mode')=='custom':
+        selected=split_materials(question.get('materials',''))
+        original={b['id']:b['text'] for b in blocks}
+        if selected and all(original.get(b['id'])==b['text'] for b in selected):
+            return [b['id'] for b in selected]
+    return None
+
+
+def essay_material_priority(questions, question, blocks):
+    from .reference_policy import is_essay
+    priority=dict(version=1,available=False,preferred_ids=[],secondary_ids=[],unresolved_prior_questions=[])
+    current=scoped_material_ids(question,blocks)
+    if current is None:return priority
+    used=set()
+    for prior in questions:
+        if prior['number']>=question['number'] or is_essay(prior):continue
+        ids=scoped_material_ids(prior,blocks)
+        if ids is None:priority['unresolved_prior_questions'].append(prior['number'])
+        else:used.update(ids)
+    priority.update(available=True,preferred_ids=[i for i in current if i not in used],secondary_ids=[i for i in current if i in used])
+    return priority
 
 
 def model_question(snapshot):
