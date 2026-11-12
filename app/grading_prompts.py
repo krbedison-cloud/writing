@@ -1,46 +1,51 @@
-"""Compact shared prompts. Score calibration is sent once in its own field."""
+"""Shared task prompts; keep scoring, reference writing and exact layout accounting distinct."""
 import json
-QUESTION_FIRST = '以question.prompt审题、以question.materials为内容依据；kind只表示20/30/50分训练档，不代表文体。任务、对象、内容、格式和字数按题干，不强加标题、称呼、落款、日期；不套其他题模板，歧义须说明。'
+
+PROMPT_VERSION = 'efficient-v1'
+
+QUESTION_FIRST = '以question.prompt和materials为准；kind只表示20/30/50分训练档，不代表文体。任务、对象、格式、字数按题干，不强加其他题模板；有歧义须说明。'
+JSON_RULES = '仅返回一个完整JSON对象，不加代码块或说明；键和字符串用双引号，正文换行转义为\\n。示例为空结构，须据本题填实，列表均为字符串数组。'
+SELF_CHECK_SHAPE = {'word_count':None,'used_rows':None,'complies':True,'format_note':''}
+PLAN_SHAPE = {'framework':'','progression':'','material_use':[]}
+REFERENCE_SHAPE = {'high_score_answer':'','high_score_plan':PLAN_SHAPE,'high_score_self_check':SELF_CHECK_SHAPE}
 GRADE_JSON = json.dumps({
- 'task_analysis':{'task':'本题任务','genre':'本题文体','requirements':['题干要求'],'material_basis':['材料依据']},
- 'high_score_answer':'完整范文，段落用换行字符',
- 'high_score_plan':{'framework':'论点框架','progression':'递进关系','material_use':['材料编号及用法']},
- 'high_score_self_check':{'word_count':0,'used_rows':0,'complies':False,'format_note':'最终自检结论'},
- 'score':0,'dimensions':{name:0 for name in ['审题立意','要点提炼','材料运用','结构逻辑','语言表达','文体规范']},
- 'strengths':[],'weaknesses':[],'suggestions':[],'evidence':['引用原答说明得失分']
+ 'task_analysis':{'task':'','genre':'','requirements':[],'material_basis':[]},**REFERENCE_SHAPE,
+ 'score':0,'dimensions':{},'strengths':[],'weaknesses':[],'suggestions':[],'evidence':[]
 },ensure_ascii=False,separators=(',',':'))
-REFERENCE_JSON = json.dumps({
- 'high_score_answer':'完整范文，段落用换行字符',
- 'high_score_plan':{'framework':'论点框架','progression':'递进关系','material_use':['材料编号及用法']},
- 'high_score_self_check':{'word_count':0,'used_rows':0,'complies':False,'format_note':'最终自检结论'}
-},ensure_ascii=False,separators=(',',':'))
-JSON_RULES = '只返回一个完整JSON对象，英文键名和文字用双引号，正文换行须转义为\\n，不加说明或代码块。示例只规定结构，实际内容和数字须据本题填写，不照抄示例值。'
-GRADING_TASK = ('独立批改。返回JSON结构：'+GRADE_JSON+JSON_RULES+
- '先据题干、材料独立生成范文及构思说明，再评价answer；评分校准calibration仅评用户原答，不限制范文质量。'
- 'task/genre为题干任务/文体，requirements/material_basis为要求/材料依据。所有列表为字符串数组，评语通常2–4条，无优缺点或建议时可空；evidence不可空，须引用原答解释评价。'
- 'score按full_score及calibration；dimensions用给定六维中文名为键、0–100数字为值，不嵌套说明。评语简明去重。'+QUESTION_FIRST)
-REFERENCE_FIELDS = '仅生成范文不评分，返回JSON结构：'+REFERENCE_JSON+JSON_RULES
-REFERENCE_RULES = ('范文独立依据question的题干、材料与给定范文规则构思，保留既定文体、框架与格式要求；用户answer仅供批改，不作范文底稿、提纲、事实来源或要点边界，不沿用其错误与遗漏，也不为求不同避开题内正确要点。'
- '材料外案例仅按专门范文规则的既有例外。previous_reference若提供，是模型旧范文，仅用于校正或增减篇幅，不是用户原答；始终回题干、材料核验。范文完整纯文本，无Markdown或字数附注。'
- '范文完成后按reference_paper_spec（缺省用question.paper_spec）自检，保留必要构思与论证，只返回最终自检结果；rules同名字段优先，否则用question.paper_spec.rules。'
- '标题标点计字，空格、缩进、换行损失计格，缩进用全角空格；须同时满足字数上下限与纸面容量，format_note只写一句自检结论。')
-DEFAULT_CALIBRATION = '依据本题制定细则，优秀须切题且有充分材料或论证支撑；具体说明缺失和扣分，不因语言华丽忽略离题。非官方阅卷。'
-PRACTICAL_CALIBRATION = ('应用文30分训练校准（自定标准，仅评用户原答）：仍按本题材料、任务制定要点及分值，踩点给分；同义表达、有效抽象概括同等给分，重复内容不重复计分，同一缺陷不重复扣分。'
- '短评分档：17–19分中等较差，框架结构基本对，但语言不够简练准确、有要点缺失，视缺失程度裁量；20–22分中等，框架结构对、论点总结正确，能抽象概括材料案例佐证，评论基本准确；'
- '23–25分中等偏上，在中等基础上开头出彩，前置句准确且对仗工整，典型案例覆盖充分、概括恰当，评论切中要害且出彩，结尾升华到位；25分以上极少，仅特别优秀且有原答证据才给。'
- '其他应用文按同等质量层次类推到任务完成、信息完整准确、对象语气及格式表达，不强加短评的分论、案例、对仗或升华。'
- '说明关键得失分要点及档次依据；框架正确或辞藻漂亮不能掩盖关键漏点。分档不作保底、封顶或统一折扣，不先定档倒推扣分；严重漏点或离题可低于17。')
-ESSAY_CALIBRATION = ('大作文50分训练校准（非保底或封顶）：30分非常一般，介于答非所问与论点准确；33分二类起点，论点准确、框架基本合理、论述无明显瑕疵且自洽，无功无过；35分二类中上；'
- '36–38分高水平，论点准确并递进、论证严密深刻，表达简明准确、用词规范，文笔优于二类；38分以上实战极罕见，须逐项引用原答证明突出表现。'
- '离题或严重缺陷应低于30，不凑分；三个或四个分论段均可，不因四段扣分。')
+REFERENCE_JSON = json.dumps(REFERENCE_SHAPE,ensure_ascii=False,separators=(',',':'))
+EFFICIENCY_RULES = '完成必要审题后直接形成一版成稿与结论；不枚举多套候选，不逐字列数、模拟格子或反复试排。保留关键分析，不为满足示例数值额外推演。'
+GRADING_TASK = ('独立批改。'+JSON_RULES+GRADE_JSON+QUESTION_FIRST+
+ '先独立构思范文，再评价answer；calibration只约束原答评分。score不超过full_score，dimensions按给定六维名称逐项返回0–100数字。'
+ 'task简述任务，genre为文体；requirements列硬性要求，material_basis列材料编号及要点，均用短句，不复述题干材料。'
+ '优缺点、建议通常各2–4条，每条一句；同类合并但不能省略关键漏点。evidence不可空，短引原答并说明得失分依据，避免各字段重复长评。')
+REFERENCE_FIELDS = '仅生成范文不评分。'+JSON_RULES+REFERENCE_JSON
+REFERENCE_RULES = ('范文只据本题题干、材料和专用范文规则独立构思；answer只用于批改，不作底稿、提纲或要点边界，不沿用其错误遗漏，也不刻意避开其中正确要点。'
+ 'previous_reference若提供是模型旧范文，仅用于校正或增减篇幅；范文为完整纯文本，段落用换行，缩进用全角空格，格式按题干。'
+ '按reference_paper_spec（缺省question.paper_spec）检查篇幅与格式。模型做一次文体、结构、材料和篇幅自检，format_note用一句话；精确计字占格由程序校验。'
+ 'word_count和used_rows有把握才填数字，否则填null，不猜数、不为计数反复重写；complies如实判断。程序发现字数、占格或形式不合规时会反馈实测结果，最多修订一次。')
+DEFAULT_CALIBRATION = '按题干材料制定细则，优秀须切题且要点或论证充分；扣分须有材料与原答证据，不因辞藻忽略离题。非官方阅卷。'
+PRACTICAL_CALIBRATION = ('应用文30分训练校准，仅评原答：依本题分配要点分，踩点给分，同义表达和有效抽象概括同等得分；重复不加分，同一缺陷不重复扣分。'
+ '短评17–19分：结构基本对，语言不够简练准确、有要点缺失，按缺失程度裁量；20–22分：结构对、论点正确，能抽象概括材料案例，评论基本准确；'
+ '23–25分：在中等基础上开头出彩、前置句准确对仗、典型案例覆盖充分恰当、评论切中要害、结尾升华到位。25分以上极少，须有原答突出证据。'
+ '其他应用文按同等层次类推任务、信息、对象语气及格式，不强加短评框架。说明关键得失分和档次依据；不保底、不封顶、不统一折扣，不先定档倒推扣分，严重漏点或离题可低于17。')
+ESSAY_CALIBRATION = ('大作文50分训练校准：30分非常一般，介于答非所问与论点准确；33分二类起点，论点准、框架合理、论述无明显瑕疵且自洽；35分二类中上；'
+ '36–38分高水平，论点准确递进、论证严密深刻、表达简明规范、文笔更好；38分以上极罕见，须引原答证据。离题或严重缺陷低于30，不凑分；非保底或封顶，四个分论段不扣分。')
+
 
 def calibration_policy(question):
     if question.get('kind')=='practical':return 'practical-v1'
     from .reference_policy import is_essay
     return 'essay-v1' if is_essay(question) else None
 
+
 def calibration(question):
     return {'practical-v1':PRACTICAL_CALIBRATION,'essay-v1':ESSAY_CALIBRATION}.get(calibration_policy(question),DEFAULT_CALIBRATION)
 
-PLAN_RULES = ('面向读者的简要构思讲解：framework概括总论点与分论点框架，progression解释各论点为何这样递进、串联；material_use是字符串数组，逐条用“材料编号：用于哪一论点、如何衔接”说明本题每份材料的用法，舍弃则说明理由，材料无编号可按主题标识。'
- '大作文若必要补充材料外案例，另列“材料外补例：事实、用途及必要性”。不强求每份材料入文，不复述材料原文或范文，不输出内部思考过程。框架和递进各1–2句，材料每条一句，通常共200–400字，小题更短，材料多可略延长。说明不混入范文，不计入其字数和占格。')
+
+PLAN_RULES = ('构思说明与范文分开：framework一句概括总分论点，progression一句说明递进与串联；material_use用“材料编号：用途、衔接或舍弃理由”的短句。'
+ '同用途材料可合列编号，仍须覆盖各材料取舍；不复述原材料、范文或内部思考，不求全用。材料外补例须标明事实、用途及必要性。通常150–250字，小题更短，材料多可略增。')
+SYNTHESIS_TASK = ('汇总多位教练的批改。'+JSON_RULES+'{"analysis":"","consensus":[],"disagreements":[],"action_plan":[]}。'
+ '依本题题干、材料及原答核验审题和扣分证据，识别文体误判、强加格式、无关材料及评分校准偏差；排除错误诊断，不盲信多数、不修改程序均分。'
+ 'analysis通常150–250字指出关键不足；共识与分歧通常各1–3条，无则空，分歧引原答证据；建议2–4条，按优先级写下次可执行动作。同类合并，不重复长评。')
+PLAN_TASK = ('范文构思讲解。'+JSON_RULES+json.dumps(PLAN_SHAPE,ensure_ascii=False,separators=(',',':'))+
+ '仅解释给定reference_answer，不重写范文、不评分、不重新计算字数。'+PLAN_RULES)

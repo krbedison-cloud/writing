@@ -498,7 +498,7 @@ class AppTests(unittest.TestCase):
         from test_essay_policy import essay_fixture
         async def with_plan(provider,task,data):
             if task.startswith('独立批改'):
-                result=grade(35);result.update(high_score_answer=essay_fixture(),high_score_plan=PLAN);return result
+                result=grade(35);result.update(high_score_answer=essay_fixture(),high_score_plan=PLAN,high_score_self_check=dict(word_count=None,used_rows=None,complies=True,format_note='已检查结构、材料与篇幅。'));return result
             if task.startswith('单独重写高分范文'):
                 return dict(high_score_answer=essay_fixture(6),high_score_plan=dict(PLAN,framework='这是四个分论段的新框架。'))
             return await fake_model(provider,task,data)
@@ -506,6 +506,9 @@ class AppTests(unittest.TestCase):
         with patch('app.service.call_model',side_effect=with_plan) as mock:
             a=self.submit(p,2);ref=a['grades'][0]['references'][0]
             self.assertEqual(ref['plan'],PLAN)
+            self.assertIsNone(ref['model_self_check']['word_count'])
+            self.assertIsNone(ref['model_self_check']['used_rows'])
+            self.assertFalse(any(c.args[1].startswith('范文校正') for c in mock.call_args_list))
             self.assertTrue(ref['layout_check']['valid']);self.assertGreater(ref['layout_check']['word_count'],1000)
             summary=next(c.args[2] for c in mock.call_args_list if c.args[1].startswith('汇总'))
             self.assertNotIn('high_score_plan',summary['reviews'][0]['result'])

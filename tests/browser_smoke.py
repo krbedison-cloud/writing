@@ -95,6 +95,7 @@ class MockModel(BaseHTTPRequestHandler):
         else:result={'ok':True}
         self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
         if model=='coach-format':
+            result['high_score_self_check']=dict(word_count=None,used_rows=None,complies=True,format_note='已检查结构、材料依据和篇幅，精确计数由程序核验。')
             # A real HTTP gateway returning text blocks, an introduction, a literal newline and a trailing comma.
             raw=json.dumps(result,ensure_ascii=False)
             raw=raw.replace('参考答案，仅用于','参考答案，\n仅用于')
@@ -793,10 +794,17 @@ def main():
                 assert received_contexts[-1]['paper_spec']['cells']==450
                 assert '独立材料乙' not in received_contexts[-1]['materials']
                 assert counts['coach-format']==1
+                page.goto(base+'/#attempt/'+record['attempt_id'])
+                expect(page.locator('#review-body')).to_contain_text('计数由程序核验')
+                expect(page.locator('#review-body')).not_to_contain_text('null 字')
+                expect(page.locator('#review-body')).not_to_contain_text('null 行')
+                expect(page.locator('#review-body')).not_to_contain_text('模型计数与程序不同')
+                expect(page.locator('#review-body .reference-paper-target .paper-cell')).to_have_count(450)
+                page.screenshot(path='/tmp/shenlun-v30-model-selfcheck.png',full_page=True)
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()
-            print('PASS: Anhui B third-question 450-character/18-row sheet and stale 600 repair, whole overflow deletion, wrapped text-block/raw-newline/trailing-comma grading without extra calls; edited failed interface retry, deleted-interface replacement and master reassignment, master-only recovery without regrading, staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: nullable AI counters with exact program accounting and no spurious mismatch; Anhui B third-question 450-character/18-row sheet and stale 600 repair, whole overflow deletion, wrapped text-block/raw-newline/trailing-comma grading without extra calls; edited failed interface retry, deleted-interface replacement and master reassignment, master-only recovery without regrading, staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)

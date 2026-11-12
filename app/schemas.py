@@ -83,8 +83,8 @@ class RetryInput(BaseModel):
         return self
 
 class ReferenceSelfCheck(BaseModel):
-    word_count: int = Field(ge=0, le=20000)
-    used_rows: int = Field(ge=0, le=20000, validation_alias=AliasChoices('used_rows','rows_used'))
+    word_count: int | None = Field(default=None, ge=0, le=20000)
+    used_rows: int | None = Field(default=None, ge=0, le=20000, validation_alias=AliasChoices('used_rows','rows_used'))
     complies: bool
     format_note: str = Field(default="", max_length=1800)
 

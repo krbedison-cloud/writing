@@ -12,7 +12,7 @@ from .materials import prepare_paper, model_question
 from .schemas import Grade, Synthesis, Portrait, PaperInput, ReferenceDraft, DIMENSIONS, KINDS, ReferencePlan
 from .paper import check_paper
 from .reference_policy import reference_policy, check_reference_style, needs_reference_repair, reference_paper_spec, reference_payload, is_essay, ESSAY_MATERIAL_PRIORITY
-from .grading_prompts import QUESTION_FIRST, GRADING_TASK, REFERENCE_FIELDS, REFERENCE_RULES, PLAN_RULES, calibration, calibration_policy
+from .grading_prompts import QUESTION_FIRST, GRADING_TASK, REFERENCE_FIELDS, REFERENCE_RULES, PLAN_RULES, SYNTHESIS_TASK, PLAN_TASK, PROMPT_VERSION, calibration, calibration_policy
 from .portrait_summary import BRIEF_POLICY, NOTES_VERSION, readable_portrait, brief_points, rewrite_evidence
 from .output_validation import validation_message
 from .import_validation import FORMAT, normalize_import, import_errors
@@ -147,7 +147,7 @@ class Service:
         if not needs_reference_repair(reference):
             return None
         try:
-            raw = await self.ask(provider, '范文校正。'+QUESTION_FIRST+REFERENCE_FIELDS+REFERENCE_RULES+reference_policy(q)+PLAN_RULES, {'question':q,'previous_reference':reference['answer'],'actual_check':reference['layout_check'], **reference_payload(q), **({'style_check':reference['style_check']} if reference.get('style_check') else {})})
+            raw = await self.ask(provider, '范文校正。以actual_check实测结果为准，保留正确观点，仅修所列问题；一次返回完整修订稿，不重新逐字计算原文。'+QUESTION_FIRST+REFERENCE_FIELDS+REFERENCE_RULES+reference_policy(q)+PLAN_RULES, {'question':q,'previous_reference':reference['answer'],'actual_check':reference['layout_check'], **reference_payload(q), **({'style_check':reference['style_check']} if reference.get('style_check') else {})})
             draft = ReferenceDraft.model_validate(raw).model_dump()
             return self.reference(draft,q,direction='auto_repair')
         except Exception as exc:
@@ -206,7 +206,7 @@ class Service:
             versions=self.references(a,g)
             ref=next(r for r in versions if r['id']==reference_id)
             q=self.reference_question(a,ref)
-            raw=await self.ask(provider,'范文构思讲解。仅返回{framework,progression,material_use}。对已经完成的范文解释框架、递进、各材料用法与取舍，不改写范文、不重新评分。'+PLAN_RULES+(ESSAY_MATERIAL_PRIORITY if is_essay(q) else ''),{'question':q,'reference_answer':ref['answer']})
+            raw=await self.ask(provider,PLAN_TASK+(ESSAY_MATERIAL_PRIORITY if is_essay(q) else ''),{'question':q,'reference_answer':ref['answer']})
             plan=ReferencePlan.model_validate(raw).model_dump()
             ref.update(plan=plan,plan_updated_at=now())
             if getattr(raw,'usage',None):ref['plan_usage']=raw.usage
@@ -280,7 +280,7 @@ class Service:
             if any(g['provider_id'] == pid and g['status'] == 'completed' for g in a['grades']):
                 return
             snapshot = next(p for p in a['providers'] if p['id'] == pid)
-            g = dict(provider_id=pid, name=snapshot['name'], model=snapshot['model'], status='running', grading_policy=GRADING_POLICY, queued_at=now())
+            g = dict(provider_id=pid, name=snapshot['name'], model=snapshot['model'], status='running', grading_policy=GRADING_POLICY, prompt_version=PROMPT_VERSION, queued_at=now())
             if policy:=calibration_policy(q):g['calibration_policy']=policy
             progress(g,'queued')
             try:
@@ -323,7 +323,7 @@ class Service:
                     master=self.provider(a['master']['id'])
                     if any(master[k]!=a['master'][k] for k in ('model','base_url','protocol')):
                         raise ModelError('汇总接口配置已更新，请重试汇总或更换汇总接口')
-                    raw = await self.ask(master, '汇总多位教练的批改，先以本题题干、材料和用户原答核验每位教练的审题与扣分依据；若有文体误判、强加格式或引用无关材料，须明确指出并排除其诊断影响，不把错误当共识。有calibration时核验得分与档次依据是否一致；指出偏松或偏严须引原答证据。返回 {analysis,consensus,disagreements,action_plan}。analysis用300–600字给出关键诊断，其余为字符串数组。consensus和disagreements各最多5条，action_plan最多5条，每条只给一个具体动作，优先级从高到低，避免重复。识别共识和分歧，检验批评是否有原文证据，不盲信多数。均分已由程序计算，不改分。优先给出下一次能执行的修改动作。', {'question':{k:v for k,v in q.items() if k!='reference_material_priority'},'answer':a['answer'],'answer_layout':check_paper(a['answer'],q['paper_spec']),'mean_score':a['mean_score'],'successful_count':len(good),'requested_count':len(a['providers']),**({'calibration':calibration(q)} if calibration_policy(q) else {}), 'reviews':[{k:g[k] for k in ('provider_id','name','model','status')} | {'result':{k:v for k,v in g['result'].items() if k not in ('high_score_answer','high_score_self_check','high_score_plan')}} for g in good]})
+                    raw = await self.ask(master, SYNTHESIS_TASK, {'question':{k:v for k,v in q.items() if k!='reference_material_priority'},'answer':a['answer'],'answer_layout':check_paper(a['answer'],q['paper_spec']),'mean_score':a['mean_score'],'successful_count':len(good),'requested_count':len(a['providers']),**({'calibration':calibration(q)} if calibration_policy(q) else {}), 'reviews':[{k:g[k] for k in ('provider_id','name','model','status')} | {'result':{k:v for k,v in g['result'].items() if k not in ('high_score_answer','high_score_self_check','high_score_plan')}} for g in good]})
                     a['synthesis']=Synthesis.model_validate(raw).model_dump();a['summary_status']='completed'
                 except Exception as exc:
                     a.update(summary_status='failed',error=public_error(exc))
