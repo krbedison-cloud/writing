@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh | bash
 ```
 
-安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.30` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
+安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.31` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
 
 配置保存在 `~/shenlun-studio/.env`，程序只监听本机 `18086` 端口；数据使用 Docker 数据卷 `shenlun-studio-data`。安装脚本会输出实际访问地址和停止命令。重复运行安装命令不会覆盖已有 `.env`；如版本配置文件已有人工修改，会停止而不是覆盖。发布的新版本可以通过再次执行安装命令更新，既有数据保留。
 
@@ -39,7 +39,7 @@ SHENLUN_DIR="$HOME/Applications/shenlun-studio" bash install-shenlun.sh
 公开镜像可直接拉取：
 
 ```bash
-docker pull ghcr.io/krbedison-cloud/writing:v0.1.30
+docker pull ghcr.io/krbedison-cloud/writing:v0.1.31
 ```
 
 GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架构镜像并创建对应标签的 Release。发布新版本时同步更新 VERSION、安装脚本默认版本与部署配置。GHCR 首次创建的包可能是私有的；仓库拥有者可到 GitHub 的 Packages → writing → Package settings 将包设为 Public，之后无需登录即可拉取。即使没有更改包的可见性，上面的安装器仍能使用公开 Release 中的预构建 Docker 镜像完成安装，不必登录 GHCR。
@@ -49,7 +49,7 @@ GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架
 在运行 Docker Desktop 的 Mac mini 上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.30/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.31/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
 ```
 
 安装器会保留已有数据和其他配置，持久设置 `APP_BIND=0.0.0.0`、`ALLOW_LAN=1` 以及指定端口。Docker 会在 Mac 所有 IPv4 接口监听 `18086`，应用允许以私有局域网 IP 访问；原来的主机白名单和同源写入检查仍有效。IP 变化后通常不需要重新配置白名单。
@@ -63,7 +63,7 @@ Mac 防火墙如提示 Docker 接收入站连接，选择允许。设备需要�
 恢复仅本机访问：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.30/install.sh | SHENLUN_LAN=0 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.31/install.sh | SHENLUN_LAN=0 bash
 ```
 
 未指定 `SHENLUN_LAN` 时，保留现有的访问模式。
@@ -342,3 +342,13 @@ API 辅助识别兼容数字年份、中文训练题型、空值字数、文字�
 | 大作文（含前题取材规则） | 2774 | 2165 | 22.0% |
 
 上表是可复现的字符量比较，不是三家服务商的token账单或思考量实测；真实思考消耗需更新后在原接口核对。功能验证使用本地模拟接口，不调用真实付费API。新增提示词预算、三家接口参数、空计数兼容和严格纸面校验回归；安卓App继续使用v0.1.28，无需重装。
+
+
+### v0.1.31：范文叙述与段落引号
+
+- 概括、应用文、短评和大作文的范文均直接叙述主体、做法及成效，避免“材料中”“材料几中”“根据给定资料”等试卷引用口吻。材料编号可正常出现在审题、评分证据和构思说明中；不因此改分或处理用户原答案。
+- 新生成和重写范文中，明确的整篇JSON字符串重复编码、多段统一外包双引号会先在本地清理，再计算字数与纸面占格。正常句内引述、书名号、反斜杠、段落缩进和换行保留；普通中文整段引述不作盲目剥除。清理引号本身不增加API调用。
+- 程序检查明显的试卷材料引用口吻，沿用现有最多一次的范文修订；若仍失败，保留原结果与提示，可单独重生成范文。原分数、原作答和历史快照不覆盖。“原材料”“新材料中心”等实际名词、书名中的相关字样避免误报。
+- 通过合并旧说明加入新约束，上一版提示词长度预算检查继续通过；推理强度、输出上限和其他功能保留。安卓继续使用v0.1.28，无需重装。
+
+验证：150项后端测试、7项计时器测试与Chromium完整流程，接口均使用本地模拟服务。覆盖引号清理、正常引用保留、字数格数一致、正文材料引用的一次修订、历史版本、手机同步和现有批改功能。

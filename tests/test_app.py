@@ -493,6 +493,42 @@ class AppTests(unittest.TestCase):
         summary=next(c.args[2] for c in mock.call_args_list if c.args[1].startswith('汇总'))
         self.assertEqual(summary['calibration'],PRACTICAL_CALIBRATION)
 
+    def test_wrapped_reference_is_cleaned_without_an_extra_model_call(self):
+        from test_reference_policy import COMMENT
+        from app.paper import check_paper
+        wrapped='\n'.join('"'+line+'"' for line in COMMENT.splitlines())
+        async def quoted(provider,task,data):
+            if task.startswith('独立批改'):return dict(grade(22),high_score_answer=wrapped)
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=quoted) as mock:a=self.submit(self.make_paper(),1)
+        g=a['grades'][0];ref=g['references'][0]
+        self.assertEqual(g['result']['high_score_answer'],COMMENT)
+        self.assertEqual(ref['answer'],COMMENT)
+        self.assertEqual(ref['layout_check'],check_paper(COMMENT,a['paper_spec']))
+        self.assertTrue(ref['style_check']['valid']);self.assertEqual(len(g['references']),1)
+        self.assertFalse(any(c.args[1].startswith('范文校正') for c in mock.call_args_list))
+        self.assertEqual(a['answer'],'加强基础建设，推动绿色创新与产业发展。')
+
+    def test_source_referencing_generic_reference_uses_existing_one_repair_only(self):
+        p=self.make_paper();p['questions'][1].update(prompt='根据资料1提出改进建议，不超过450字。',kind='practical',word_max=450)
+        p=self.client.put('/api/papers/'+p['id'],json=p).json()
+        bad='材料1中，某地搭建服务平台，推动政策落地，提升服务质效。'
+        good='某地搭建服务平台，推动政策落地，提升服务质效。'
+        async def source_model(provider,task,data):
+            if task.startswith('独立批改'):return dict(grade(22),high_score_answer=bad)
+            if task.startswith('范文校正'):
+                self.assertEqual(data['previous_reference'],bad)
+                self.assertTrue(data['style_check']['source_mentions'])
+                self.assertNotIn('answer',data)
+                return dict(high_score_answer=good)
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=source_model) as mock:a=self.submit(p,1)
+        self.assertEqual(a['mean_score'],22)
+        self.assertEqual(a['grades'][0]['result']['high_score_answer'],bad)
+        refs=a['grades'][0]['references'];self.assertEqual(len(refs),2)
+        self.assertFalse(refs[0]['style_check']['valid']);self.assertEqual(refs[1]['answer'],good)
+        self.assertEqual(sum(c.args[1].startswith('范文校正') for c in mock.call_args_list),1)
+
     def test_reference_plans_stay_with_their_version_and_out_of_summary(self):
         from test_reference_plan import PLAN
         from test_essay_policy import essay_fixture

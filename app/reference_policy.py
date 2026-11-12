@@ -63,31 +63,53 @@ NUMBER = r'(?:\d{1,18}(?:[,，]\d{3}){0,5}(?:\.\d{1,12})?|[零〇一二两三四
 UNITS = r'(?:个百分点|平方公里|平方米|立方米|公顷|公里|千米|万元|亿元|家|吨|人|名|户|件|亩|米|元|倍|%|个(?!方面|层面|维度|环节|步骤|方向|要点))'
 QUANTITY = re.compile(r'(' + NUMBER + r')\s*(' + UNITS + r')|百分之[零〇一二两三四五六七八九十百\d.]+')
 
+# Detect exam-source references, not words such as 原材料 or 新材料中心.
+_SOURCE_NUMBER = r'(?:[0-9]+|[一二三四五六七八九十百零〇几]+)'
+_SOURCE_NUMBERED = (r'(?:材料|资料)\s*[“「"（(]?\s*'+_SOURCE_NUMBER+
+                    r'(?:\s*[、,，和及至到—-]\s*'+_SOURCE_NUMBER+r')*\s*[”」"）)]?'
+                    r'(?=$|[\s，,。；;：:、“「]|中|里|的|所|显示|指出|提到|表明|介绍|描述|反映|为例|讲述|说明|体现)')
+SOURCE_REFERENCE = re.compile(
+    r'(?:给定|所给|上述|以上)(?:材料|资料)|'+_SOURCE_NUMBERED+
+    r'|(?:(?<!\w)|(?:根据|依据|结合|从|在|例如|比如|正如|引用|参照|如))'
+    r'(?:材料|资料)(?:中(?!心)|里|所述|所列|所举|显示|指出|提到|表明)')
+
+
+def source_references(answer):
+    text=unicodedata.normalize('NFKC',answer)
+    titles=[match.span() for match in re.finditer(r'《[^》\n]*》',text)]
+    return list(dict.fromkeys(match[0] for match in SOURCE_REFERENCE.finditer(text)
+                              if not any(start<=match.start()<end for start,end in titles)))[:8]
+
+
 def check_reference_style(answer, question):
     essay=is_essay(question)
-    if not essay and not is_short_comment(question):
+    short=is_short_comment(question)
+    mentions=source_references(answer)
+    if not essay and not short and not mentions:
         return None
     blocks = [line.strip() for line in answer.splitlines() if line.strip()]
     # A short standalone title may precede the five body paragraphs.
     counts=(5,6) if essay else (5,)
     body = blocks[1:] if len(blocks)-1 in counts and len(blocks[0])<=40 and not blocks[0].endswith(('。','；',';')) else blocks
     reasons=[]
-    if len(body) not in counts:
+    if (essay or short) and len(body) not in counts:
         label='大作文正文应为5或6段（开头＋3或4个分论段＋结尾）' if essay else '短评正文应为5段（开头＋3个分论段＋结尾）'
         reasons.append(f'{label}，当前识别到{len(body)}段')
     quantities=[]
     scan=unicodedata.normalize('NFKC',answer)
     for idiom in ('千家万户','万家灯火','千人一面'):
         scan=scan.replace(idiom,'')
-    for match in QUANTITY.finditer(scan):
+    for match in QUANTITY.finditer(scan) if essay or short else []:
         # “一家企业”“一个主体” are indefinite subjects, not quantitative case data.
         if match[1]=='一' and match[2] in ('家','个','人','名','户'):
             continue
         if match[0] not in quantities:quantities.append(match[0])
     if quantities:
         reasons.append('检测到具体数量表达：'+'、'.join(quantities[:5])+'；请概括案例的主体、行动和效果')
-    return dict(policy='essay-v1' if essay else 'short-comment-v1',valid=not reasons,body_paragraphs=len(body),
-                quantities=quantities,reasons=reasons)
+    if mentions:
+        reasons.append('范文含试卷材料引用口吻：'+'、'.join(mentions)+'；请直接叙述主体、做法和成效，材料编号只放在审题或构思说明中')
+    return dict(policy='essay-v1' if essay else 'short-comment-v1' if short else 'reference-prose-v1',valid=not reasons,body_paragraphs=len(body),
+                quantities=quantities,source_mentions=mentions,reasons=reasons)
 
 def needs_reference_repair(reference):
     return not reference['layout_check']['valid'] or bool(reference.get('style_check') and not reference['style_check']['valid'])

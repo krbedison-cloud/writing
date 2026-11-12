@@ -27,6 +27,7 @@ from test_essay_policy import essay_fixture
 from test_reference_plan import PLAN
 from app.grading_prompts import ESSAY_CALIBRATION, PRACTICAL_CALIBRATION, REFERENCE_RULES
 
+PROSE='　　当地坚持“服务为先”，完善《惠企服务指南》，推动政策落地。\n　　有关部门搭建服务平台，回应企业诉求，提高服务效能。'
 counts={}
 received_contexts=[]
 received_reference_contexts=[]
@@ -56,6 +57,7 @@ class MockModel(BaseHTTPRequestHandler):
                 self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
                 self.wfile.write(json.dumps({'choices':[{'finish_reason':'length','message':{'content':'partial'}}],'usage':{'completion_tokens':6000,'completion_tokens_details':{'reasoning_tokens':5900}}}).encode());return
             result=dict(score=payload['full_score']-(4 if model=='coach-a' else 6),dimensions={k:70 for k in DIMENSIONS},strengths=['观点清晰'],weaknesses=['材料要点尚有遗漏'],suggestions=['分类概括关键措施'],evidence=['原答案“加强建设”需要展开具体措施'],high_score_plan=PLAN,high_score_answer='这是模拟接口生成的参考答案，仅用于验证调用与存档流程，不是真实模型批改。',task_analysis=dict(task=payload['question']['prompt'],genre='按本题题干审题',requirements=[payload['question']['prompt']],material_basis=[payload['question']['materials'][:80]]))
+            if model=='coach-source':result['high_score_answer']='材料1中，某地搭建服务平台，推动政策落地，提升服务质效。'
         elif task.startswith(('范文校正','单独重写高分范文')):
             if payload['question']['kind']=='essay':assert 'reference_material_priority' in payload['question']
             assert task.count(REFERENCE_RULES)==1
@@ -72,6 +74,10 @@ class MockModel(BaseHTTPRequestHandler):
             answer=header+'\n　　'+'甲'*(target-len(header))
             if is_short_comment(payload['question']):answer=COMMENT
             elif payload['question']['kind']=='essay':answer=essay_fixture(6)
+            if model=='coach-source':
+                assert payload['style_check']['source_mentions']
+                counts['source_repairs']=counts.get('source_repairs',0)+1
+                answer=PROSE
             check=check_paper(answer,spec)
             result=dict(high_score_plan=dict(PLAN,framework='重写范文的框架说明。'),high_score_answer=answer,high_score_self_check=dict(word_count=check['word_count'],used_rows=check['used_rows'],complies=check['valid'],format_note='已检查标题、段首缩进和换行占格'))
         elif task.startswith('范文构思讲解'):
@@ -95,10 +101,11 @@ class MockModel(BaseHTTPRequestHandler):
         else:result={'ok':True}
         self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
         if model=='coach-format':
+            if 'high_score_answer' in result:result['high_score_answer']='\n'.join('"'+line+'"' for line in PROSE.splitlines())
             result['high_score_self_check']=dict(word_count=None,used_rows=None,complies=True,format_note='已检查结构、材料依据和篇幅，精确计数由程序核验。')
             # A real HTTP gateway returning text blocks, an introduction, a literal newline and a trailing comma.
             raw=json.dumps(result,ensure_ascii=False)
-            raw=raw.replace('参考答案，仅用于','参考答案，\n仅用于')
+            raw=raw.replace('\\n','\n',1)
             raw='以下是批改结果：\n'+raw[:-1]+',}'
             envelope={'data':{'choices':[{'message':{'content':[{'type':'text','text':raw}]},'finish_reason':'stop'}]}}
         else:envelope={'choices':[{'message':{'content':json.dumps(result,ensure_ascii=False)},'finish_reason':'stop'}]}
@@ -800,11 +807,31 @@ def main():
                 expect(page.locator('#review-body')).not_to_contain_text('null 行')
                 expect(page.locator('#review-body')).not_to_contain_text('模型计数与程序不同')
                 expect(page.locator('#review-body .reference-paper-target .paper-cell')).to_have_count(450)
-                page.screenshot(path='/tmp/shenlun-v30-model-selfcheck.png',full_page=True)
+                expect(page.locator('#review-body .answer-reference')).to_have_text(PROSE)
+                assert result['grades'][0]['references'][0]['layout_check']==check_paper(PROSE,result['paper_spec'])
+                source_coach=httpx.post(base+'/api/providers',json=dict(name='范文口吻教练',protocol='openai',base_url=f'http://127.0.0.1:{mock.server_port}/v1',model='coach-source',api_key='mock-only')).json()
+                source_job=httpx.post(base+'/api/attempts',json=dict(question_id=fixed_q['id'],answer='我的原答案应完整保留。',provider_ids=[source_coach['id']],master_id=source_coach['id'])).json()
+                for _ in range(120):
+                    source_result=httpx.get(base+'/api/attempts/'+source_job['attempt_id']).json()
+                    if source_result['status'] not in ('queued','running'):break
+                    time.sleep(.2)
+                assert source_result['status']=='completed' and source_result['mean_score']==24
+                assert source_result['answer']=='我的原答案应完整保留。'
+                refs=source_result['grades'][0]['references'];assert len(refs)==2
+                assert refs[0]['style_check']['source_mentions'] and refs[-1]['answer']==PROSE
+                assert counts['source_repairs']==1 and counts['coach-source']==1
+                page.goto(base+'/#attempt/'+source_job['attempt_id'])
+                expect(page.locator('#review-body .answer-reference')).to_have_text(PROSE)
+                page.locator('.reference-version').select_option(refs[0]['id'])
+                expect(page.locator('#review-body')).to_contain_text('范文表达形式检查：需要修订')
+                expect(page.locator('#review-body')).to_contain_text('试卷材料引用口吻')
+                page.locator('.reference-version').select_option(refs[-1]['id'])
+                expect(page.locator('#review-body .answer-reference')).to_have_text(PROSE)
+                expect(page.locator('#review-body .reference-paper-target .paper-cell')).to_have_count(450)
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()
-            print('PASS: nullable AI counters with exact program accounting and no spurious mismatch; Anhui B third-question 450-character/18-row sheet and stale 600 repair, whole overflow deletion, wrapped text-block/raw-newline/trailing-comma grading without extra calls; edited failed interface retry, deleted-interface replacement and master reassignment, master-only recovery without regrading, staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: paragraph wrapper cleanup preserves normal quotes/book titles and exact paper counts without extra requests, source-language repair once without regrading and historical version warning; nullable AI counters with exact program accounting and no spurious mismatch; Anhui B third-question 450-character/18-row sheet and stale 600 repair, whole overflow deletion, wrapped text-block/raw-newline/trailing-comma grading without extra calls; edited failed interface retry, deleted-interface replacement and master reassignment, master-only recovery without regrading, staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)

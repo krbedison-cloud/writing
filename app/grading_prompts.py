@@ -1,7 +1,7 @@
 """Shared task prompts; keep scoring, reference writing and exact layout accounting distinct."""
 import json
 
-PROMPT_VERSION = 'efficient-v1'
+PROMPT_VERSION = 'efficient-v2'
 
 QUESTION_FIRST = '以question.prompt和materials为准；kind只表示20/30/50分训练档，不代表文体。任务、对象、格式、字数按题干，不强加其他题模板；有歧义须说明。'
 JSON_RULES = '仅返回一个完整JSON对象，不加代码块或说明；键和字符串用双引号，正文换行转义为\\n。示例为空结构，须据本题填实，列表均为字符串数组。'
@@ -19,10 +19,11 @@ GRADING_TASK = ('独立批改。'+JSON_RULES+GRADE_JSON+QUESTION_FIRST+
  'task简述任务，genre为文体；requirements列硬性要求，material_basis列材料编号及要点，均用短句，不复述题干材料。'
  '优缺点、建议通常各2–4条，每条一句；同类合并但不能省略关键漏点。evidence不可空，短引原答并说明得失分依据，避免各字段重复长评。')
 REFERENCE_FIELDS = '仅生成范文不评分。'+JSON_RULES+REFERENCE_JSON
-REFERENCE_RULES = ('范文只据本题题干、材料和专用范文规则独立构思；answer只用于批改，不作底稿、提纲或要点边界，不沿用其错误遗漏，也不刻意避开其中正确要点。'
- 'previous_reference若提供是模型旧范文，仅用于校正或增减篇幅；范文为完整纯文本，段落用换行，缩进用全角空格，格式按题干。'
- '按reference_paper_spec（缺省question.paper_spec）检查篇幅与格式。模型做一次文体、结构、材料和篇幅自检，format_note用一句话；精确计字占格由程序校验。'
- 'word_count和used_rows有把握才填数字，否则填null，不猜数、不为计数反复重写；complies如实判断。程序发现字数、占格或形式不合规时会反馈实测结果，最多修订一次。')
+REFERENCE_RULES = ('范文依本题题干、材料和专用规则独立构思；answer仅供批改，不作底稿、提纲或要点边界，不沿用错误遗漏，不刻意避开正确要点。'
+ 'previous_reference是模型旧范文，仅用于校正/增减篇幅。正文纯文本、实际换行、全角空格缩进，格式按题干。'
+ '正文直接写主体、做法和成效，不说“材料中”“材料几中”“根据给定资料”等；材料编号只用于审题/构思说明。段落不加外包引号，正常引述保留。'
+ '按reference_paper_spec（缺省question.paper_spec）一次自检文体、结构、材料和篇幅，format_note一句结论，complies如实判断。精确计字占格由程序校验；计数有把握填数字，否则填null，不猜数或反复重写。程序发现不合规最多反馈修订一次。')
+
 DEFAULT_CALIBRATION = '按题干材料制定细则，优秀须切题且要点或论证充分；扣分须有材料与原答证据，不因辞藻忽略离题。非官方阅卷。'
 PRACTICAL_CALIBRATION = ('应用文30分训练校准，仅评原答：依本题分配要点分，踩点给分，同义表达和有效抽象概括同等得分；重复不加分，同一缺陷不重复扣分。'
  '短评17–19分：结构基本对，语言不够简练准确、有要点缺失，按缺失程度裁量；20–22分：结构对、论点正确，能抽象概括材料案例，评论基本准确；'

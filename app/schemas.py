@@ -101,6 +101,11 @@ class ReferencePlanInput(BaseModel):
     reference_id: str = "original"
 
 class ReferenceDraft(BaseModel):
+    @field_validator('high_score_answer',mode='before')
+    @classmethod
+    def clean_paragraph_wrappers(cls,value):
+        from .reference_text import normalize_reference_text
+        return normalize_reference_text(value)
     high_score_plan: ReferencePlan | None = None
     @field_validator('high_score_plan', mode='before')
     @classmethod
