@@ -5,7 +5,7 @@ from pathlib import Path
 import fitz
 from .schemas import PaperInput, QuestionInput
 from .materials import prepare_paper
-from .paper import normalize_limit_numbers
+from .paper import word_requirement
 
 PROVINCES = '浙江 江苏 安徽 福建 江西 山东 山西 陕西 河南 河北 湖北 湖南 广东 广西 四川 重庆 云南 贵州 海南 黑龙江 吉林 辽宁 内蒙古 宁夏 青海 甘肃 新疆 西藏 北京 天津 上海 台湾 香港 澳门'.split()
 
@@ -42,13 +42,8 @@ def extract_pdf(content: bytes) -> str:
         return result
 
 def word_limits(text):
-    text = normalize_limit_numbers(text)
-    ranged = re.search(r'(\d{2,4})\s*[-—–~～至到]\s*(\d{2,4})\s*字', text)
-    if ranged:
-        return int(ranged[1]), int(ranged[2])
-    upper = re.search(r'(?:不超过|不足|不到|少于|不满|以内|最多|字数[为：:]?)\s*(\d{2,4})\s*字', text)
-    inside = re.search(r'(\d{2,4})\s*字(?:以内|以下)',text)
-    return (0,int(upper[1])) if upper else (0,int(inside[1])) if inside else (0,0)
+    limits=word_requirement(text)
+    return limits['word_min'] or 0,limits['word_max'] or 0
 
 def classify(prompt, index, count):
     lo, hi = word_limits(prompt)

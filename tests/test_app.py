@@ -113,6 +113,32 @@ class AppTests(unittest.TestCase):
         self.assertEqual(r.status_code,200,r.text)
         j=self.wait_job(r.json()['job_id'])
         return self.client.get('/api/attempts/'+r.json()['attempt_id']).json()
+    def test_450_character_upgrade_repairs_current_paper_without_rewriting_history(self):
+        import copy
+        p=self.make_paper();q=p['questions'][1]
+        q.update(number=3,prompt='根据材料1，提出改进工作建议，要求不超过450字。',word_max=600,paper_rows=0)
+        p['questions']=[q];p.update(title='2026安徽B卷',province='安徽',volume='B卷')
+        saved=self.client.put('/api/papers/'+p['id'],json=p).json()
+        self.assertEqual((saved['questions'][0]['word_max'],saved['questions'][0]['paper_spec']['cells']),(450,450))
+        historical=self.submit(saved);self.assertEqual(historical['status'],'completed')
+        # Simulate an old installation with stale capacity in both question and cached spec.
+        db=self.app.state.service.db;legacy=copy.deepcopy(saved);legacy.pop('word_limits_version',None)
+        legacy['questions'][0].update(word_max=600,paper_spec=dict(q['paper_spec'],rows=24,cells=600))
+        old_attempt=db.get('attempts',historical['id'])
+        old_attempt['question_snapshot'].update(word_max=600,paper_spec=copy.deepcopy(legacy['questions'][0]['paper_spec']))
+        old_attempt['paper_spec']=copy.deepcopy(legacy['questions'][0]['paper_spec'])
+        db.put('attempts',historical['id'],old_attempt,old_attempt['created_at'])
+        db.put('papers',legacy['id'],legacy,legacy['created_at'])
+        self.app.state.service.recover()
+        current=self.client.get('/api/papers/'+p['id']).json()
+        self.assertEqual((current['questions'][0]['word_max'],current['questions'][0]['paper_spec']['rows']),(450,18))
+        self.assertEqual(db.get('attempts',historical['id']),old_attempt)
+        self.assertEqual(self.app.state.service.provider(self.master)['api_key'],'secret-example-do-not-leak')
+        a=self.submit(current);self.assertEqual(a['status'],'completed')
+        self.assertEqual(a['paper_spec']['cells'],450)
+        grading=[c.args[2] for c in self.mock.call_args_list if c.args[1].startswith('独立批改')][-1]
+        self.assertEqual((grading['question']['word_max'],grading['question']['paper_spec']['cells']),(450,450))
+
     def test_question_scoped_api_and_model_payloads(self):
         from test_materials import MATERIALS
         p=self.make_paper();p['materials']=MATERIALS
@@ -563,7 +589,10 @@ class AppTests(unittest.TestCase):
             self.assertEqual(len(initial),1)
             self.assertEqual(initial[0].args[2]['answer'],a['answer'])
             self.assertIn(REFERENCE_RULES,initial[0].args[1])
-            self.assertLess(GRADING_TASK.index('high_score_answer'),GRADING_TASK.index(',score,'))
+            from app.grading_prompts import GRADE_JSON, REFERENCE_JSON
+            shape=json.loads(GRADE_JSON)
+            self.assertLess(list(shape).index('high_score_answer'),list(shape).index('score'))
+            self.assertEqual(set(json.loads(REFERENCE_JSON)),{'high_score_answer','high_score_self_check','high_score_plan'})
             job=self.client.post('/api/attempts/'+a['id']+'/references',json={'provider_id':self.master,'direction':'rewrite'}).json()
             self.assertEqual(self.wait_job(job['id'])['status'],'completed')
         calls=[c for c in mock.call_args_list if c.args[1].startswith('单独重写高分范文')]

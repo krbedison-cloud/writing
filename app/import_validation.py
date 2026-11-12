@@ -38,6 +38,7 @@ def normalize_import(value, paper):
             if isinstance(kind,str):q['kind']=ALIASES.get(kind.strip(),kind.strip().lower())
             if q.get('kind') is None and isinstance(q.get('prompt'),str):
                 q['kind'],_=classify(q['prompt'],0,len(questions))
+            q['paper_rows']=0  # Only the user may set physical answer-sheet rows.
             for key in ('word_min','word_max','paper_rows'):
                 v=q.get(key)
                 if v is None:

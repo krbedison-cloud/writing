@@ -3,7 +3,7 @@ from pathlib import Path
 import random
 import subprocess
 import unittest
-from app.paper import paper_spec,check_paper
+from app.paper import paper_spec,check_paper,word_requirement
 from app.schemas import Grade
 
 class PaperTests(unittest.TestCase):
@@ -22,6 +22,27 @@ class PaperTests(unittest.TestCase):
         spec=paper_spec({'prompt':'不到300字','word_max':300})
         self.assertEqual((spec['word_max'],spec['rows']),(299,12))
         self.assertFalse(check_paper('甲'*300,spec)['valid'])
+    def test_prompt_limits_override_stale_cache_and_match_browser(self):
+        prompts=['不超过450字','要求：450字','请写一份450字的建议书。','不超过４５０字','字数不超过4 5 0字','四百五十字以内','标题不超过20字，正文不超过450字',
+                 '不少于1000字，不超过1200字','不能少于1000字','实际字数大于1000字，不超过1200字','不足三百字','写一篇短文。']
+        questions=[dict(prompt=p,word_min=0,word_max=600,kind='practical') for p in prompts]
+        questions += [dict(questions[0],paper_rows=24),dict(prompt='不少于1000字',word_min=0,word_max=0,kind='essay')]
+        module=str(Path(__file__).resolve().parents[1]/'app/static/paper-layout.js')
+        script="const l=require(process.argv[1]);let s='';process.stdin.on('data',b=>s+=b);process.stdin.on('end',()=>process.stdout.write(JSON.stringify(JSON.parse(s).map(q=>[l.wordRequirement(q.prompt),l.specFor(q)]))));"
+        result=subprocess.run(['node','-e',script,module],input=json.dumps(questions),capture_output=True,text=True,check=True)
+        for q,(limits,browser) in zip(questions,json.loads(result.stdout)):
+            with self.subTest(prompt=q['prompt']):
+                expected=paper_spec(q);expected.pop('rules')
+                self.assertEqual(limits,word_requirement(q['prompt']))
+                self.assertEqual(browser,expected)
+        for q in questions[:7]:
+            self.assertEqual((paper_spec(q)['rows'],paper_spec(q)['cells']),(18,450))
+            self.assertEqual(q['word_max'],600)  # Caller and historical snapshots are immutable.
+        self.assertEqual(paper_spec(questions[7])['word_max'],1200)
+        self.assertEqual(paper_spec(questions[-2])['rows'],24)  # Explicit physical-paper override survives.
+        from app.schemas import QuestionInput
+        self.assertEqual(QuestionInput(number=3,kind='practical',prompt='要求不超过450字。',word_max=600).word_max,450)
+
     def test_wrapping_newlines_and_format_loss(self):
         spec=paper_spec({'word_max':300})
         self.assertEqual(check_paper('甲'*25,spec)['used_rows'],1)

@@ -41,18 +41,144 @@ def usage_metrics(data,protocol):
     cached=raw.get('cachedContentTokenCount') if protocol=='gemini' else raw.get('cache_read_input_tokens') if protocol=='anthropic' else prompt_details.get('cached_tokens',raw.get('prompt_cache_hit_tokens')) if isinstance(prompt_details,dict) else raw.get('prompt_cache_hit_tokens')
     return {key:value for key,value in [('input_tokens',inp),('cached_tokens',cached),('output_tokens',out),('reasoning_tokens',reasoning)] if isinstance(value,int) and not isinstance(value,bool) and value>=0}
 
+def repair_json_format(text):
+    """Escape literal controls in quoted strings and remove outside trailing commas only."""
+    output=[];quoted=escaped=False
+    for index,char in enumerate(text):
+        if quoted:
+            if ord(char)<32:output.append(json.dumps(char)[1:-1])
+            else:output.append(char)
+            if char=='"' and not escaped:quoted=False
+            if char=='\\' and not escaped:escaped=True
+            else:escaped=False
+        else:
+            if char=='"':quoted=True
+            if char==',' and text[index+1:].lstrip().startswith(('}',']')):continue
+            output.append(char)
+    return ''.join(output)
+
 def parse_json(text):
-    text = text.strip()
+    if isinstance(text,dict):return text
+    if not isinstance(text,str):raise ModelError('接口未返回可读取的最终正文；原答案已保留，可重试该教练')
+    text=text.lstrip('\ufeff').strip()
+    # Some gateways put a completed thinking block before the final answer.
+    while text.startswith('<think>') and '</think>' in text:text=text.split('</think>',1)[1].strip()
     if text.startswith('```'):
-        text = re.sub(r'^```(?:json)?\s*', '', text)
-        text = re.sub(r'\s*```$', '', text)
-    try:
-        value = json.loads(text)
-    except (json.JSONDecodeError, TypeError) as exc:
-        raise ModelError('模型未返回有效 JSON，请换用支持结构化输出的模型或重试') from exc
-    if not isinstance(value, dict):
-        raise ModelError('模型返回的 JSON 必须是对象')
-    return value
+        text=re.sub(r'^```(?:json)?\s*','',text,flags=re.I)
+        text=re.sub(r'\s*```$','',text)
+    for candidate in (text,repair_json_format(text)):
+        try:value=json.loads(candidate)
+        except (json.JSONDecodeError,TypeError):
+            start=candidate.find('{')
+            if start<0:continue
+            try:
+                value,end=json.JSONDecoder().raw_decode(candidate,start)
+                # Never choose arbitrarily between two complete answers.
+                trailing=candidate[end:]
+                second=trailing.find('{')
+                if second>=0:
+                    try:json.JSONDecoder().raw_decode(trailing,second)
+                    except json.JSONDecodeError:pass
+                    else:raise ModelError('模型返回多个JSON对象，无法确定最终批改；原答案已保留，可重试该教练')
+            except json.JSONDecodeError:continue
+        if not isinstance(value,dict):raise ModelError('模型返回的 JSON 必须是对象')
+        return value
+    raise ModelError('模型最终正文不是完整可解析的JSON；已兼容代码块、说明文字和常见换行格式，原答案已保留，可单独重试该教练')
+
+def final_text(content):
+    if isinstance(content,dict) and content.get('type') in ('text','output_text','text_delta'):return final_text([content])
+    if isinstance(content,(str,dict)):return content
+    if isinstance(content,list):
+        parts=[]
+        for part in content:
+            if isinstance(part,str):parts.append(part)
+            elif isinstance(part,dict) and part.get('type','text') in ('text','output_text','text_delta'):
+                value=part.get('text','')
+                if isinstance(value,dict):value=value.get('value','')
+                if isinstance(value,str):parts.append(value)
+        if parts:return ''.join(parts)
+    raise ModelError('接口未返回最终文本正文；请核对所选协议及网关返回格式，原答案已保留')
+
+def decode_sse(text,protocol):
+    fragments=[];finish=None;usage={};complete=False
+    for event in re.split(r'\r?\n\r?\n',text.lstrip('\ufeff').strip()):
+        payload='\n'.join(line[5:].lstrip() for line in event.splitlines() if line.startswith('data:'))
+        if not payload:continue
+        if payload.strip()=='[DONE]':complete=True;continue
+        try:data=json.loads(payload)
+        except json.JSONDecodeError:raise ModelError('接口流式片段不完整，未生成有效的最终批改；原答案已保留')
+        if not isinstance(data,dict):continue
+        if data.get('error'):raise ModelError('接口流式返回错误，未生成最终批改；请检查该接口状态后单独重试')
+        if protocol=='anthropic':
+            if isinstance(data.get('usage'),dict):usage.update(data['usage'])
+            message=data.get('message',{})
+            if isinstance(message,dict) and isinstance(message.get('usage'),dict):usage.update(message['usage'])
+            delta=data.get('delta',{})
+            block=data.get('content_block',{})
+            if data.get('type')=='content_block_start' and block.get('type')=='text':fragments.append(block.get('text',''))
+            if data.get('type')=='content_block_delta' and delta.get('type')=='text_delta':fragments.append(delta.get('text',''))
+            if delta.get('stop_reason'):finish=delta['stop_reason'];complete=True
+            if data.get('type')=='message_stop':complete=True
+        elif protocol=='gemini':
+            if isinstance(data.get('usageMetadata'),dict):usage.update(data['usageMetadata'])
+            for candidate in data.get('candidates',[]):
+                parts=[dict(p,type='text') for p in candidate.get('content',{}).get('parts',[]) if p.get('text') and not p.get('thought')]
+                if parts:fragments.append(final_text(parts))
+                if candidate.get('finishReason'):finish=candidate['finishReason'];complete=True
+        else:
+            if isinstance(data.get('usage'),dict):usage.update(data['usage'])
+            for choice in data.get('choices',[]):
+                delta=choice.get('delta',{})
+                if delta.get('content') is not None:fragments.append(final_text(delta['content']))
+                message=choice.get('message')
+                if isinstance(message,dict) and message.get('content') is not None:fragments=[final_text(message['content'])]
+                if choice.get('finish_reason'):finish=choice['finish_reason'];complete=True
+            if data.get('type')=='response.output_text.delta':fragments.append(data.get('delta',''))
+            if data.get('type')=='response.completed':complete=True
+    if not complete:raise ModelError('接口流式响应在结束标记前中断，原答案已保留，可单独重试该教练')
+    content=''.join(fragments)
+    if protocol=='anthropic':return dict(content=[dict(type='text',text=content)],stop_reason=finish,usage=usage)
+    if protocol=='gemini':return dict(candidates=[dict(content=dict(parts=[dict(text=content)]),finishReason=finish)],usageMetadata=usage)
+    return dict(choices=[dict(message=dict(content=content),finish_reason=finish)],usage=usage)
+
+def response_content(data,protocol,limit):
+    if not isinstance(data,dict):raise ModelError('接口响应不是JSON对象；请核对协议及网关格式，原答案已保留')
+    for _ in range(3):
+        if any(k in data for k in ('choices','candidates','content','output','output_text')):break
+        nested=next((data[k] for k in ('data','response') if isinstance(data.get(k),dict)),None)
+        if nested is None:break
+        data=nested
+    usage=usage_metrics(data,protocol)
+    if data.get('status')=='incomplete':
+        if (data.get('incomplete_details') or {}).get('reason')=='max_output_tokens':raise TruncatedOutputError(limit,usage)
+        raise ModelError('接口报告最终正文未完成，原答案已保留，可单独重试该教练')
+    if any(k in data for k in ('score','high_score_answer','questions','analysis','ok')):
+        return data,usage
+    if protocol=='anthropic':
+        if data.get('stop_reason')=='max_tokens':raise TruncatedOutputError(limit,usage)
+        return final_text(data.get('content')),usage
+    if protocol=='gemini':
+        candidates=data.get('candidates')
+        if not isinstance(candidates,list) or not candidates:
+            raise ModelError('Gemini接口未返回候选正文，可能被拦截或格式不匹配；原答案已保留')
+        candidate=candidates[0]
+        if candidate.get('finishReason')=='MAX_TOKENS':raise TruncatedOutputError(limit,usage)
+        parts=candidate.get('content',{}).get('parts',[])
+        return final_text([dict(p,type='text') for p in parts if p.get('text') and not p.get('thought')]),usage
+    choices=data.get('choices')
+    if isinstance(choices,list) and choices:
+        choice=choices[0]
+        if choice.get('finish_reason')=='length':raise TruncatedOutputError(limit,usage)
+        message=choice.get('message',{})
+        if message.get('refusal'):raise ModelError('模型拒绝生成最终批改，未计入均分；原答案已保留')
+        if isinstance(message.get('parsed'),dict):return message['parsed'],usage
+        if message.get('content') is not None:return final_text(message['content']),usage
+        if message.get('reasoning_content'):raise ModelError('接口仅返回思考内容，缺少最终批改正文；可检查输出预算后单独重试')
+    if isinstance(data.get('output_text'),str):return data['output_text'],usage
+    if isinstance(data.get('output'),list):
+        blocks=[p for item in data['output'] if isinstance(item,dict) and item.get('type')=='message' for p in item.get('content',[])]
+        return final_text(blocks),usage
+    raise ModelError('OpenAI兼容接口未返回 choices/message/content 最终正文；请核对协议或网关格式，原答案已保留')
 
 def supports_reasoning_effort(provider):
     return (provider.get('protocol')=='openai' and urlsplit(provider['base_url']).hostname=='open.bigmodel.cn'
@@ -148,26 +274,19 @@ async def call_model(provider, task, payload):
                     response=await client.post(url,headers=headers,json=body)
             if response.status_code >= 300:
                 raise http_error(response,provider,body)
-            data = response.json()
-            usage=usage_metrics(data,protocol)
-            if protocol == 'anthropic':
-                if data.get('stop_reason') == 'max_tokens':
-                    raise TruncatedOutputError(limit,usage)
-                content = ''.join(x.get('text','') for x in data['content'] if x.get('type') == 'text')
-            elif protocol == 'gemini':
-                candidate = data['candidates'][0]
-                if candidate.get('finishReason') == 'MAX_TOKENS':
-                    raise TruncatedOutputError(limit,usage)
-                content = ''.join(p.get('text','') for p in candidate['content']['parts'] if not p.get('thought'))
+            if response.text.lstrip('\ufeff \t\r\n').startswith(('data:','event:',':')):
+                data=decode_sse(response.text,protocol)
             else:
-                choice = data['choices'][0]
-                if choice.get('finish_reason') == 'length':
-                    raise TruncatedOutputError(limit,usage)
-                content = choice['message']['content']
+                try:data=response.json()
+                except ValueError:raise ModelError('接口返回的外层正文不是JSON或标准SSE；请核对协议或网关，原答案已保留')
+            if isinstance(data,dict) and data.get('error'):raise http_error(response,provider,body)
+            content,usage=response_content(data,protocol,limit)
             return ModelResult(parse_json(content),usage)
     except ModelError:
         raise
     except (TimeoutError, httpx.TimeoutException) as exc:
         raise ModelError(f'接口超时（本次等待上限 {timeout_seconds:g} 秒），已保留作答；可在模型设置调高超时后重试该教练') from exc
-    except (httpx.HTTPError, KeyError, IndexError, ValueError, TypeError) as exc:
-        raise ModelError('接口连接失败或响应结构不匹配，请检查协议与配置') from exc
+    except httpx.HTTPError as exc:
+        raise ModelError('接口连接失败，原答案已保留，请检查网络后单独重试') from exc
+    except (KeyError, IndexError, ValueError, TypeError,AttributeError) as exc:
+        raise ModelError('接口最终正文结构无法识别，原答案已保留；请核对所选协议与网关格式') from exc

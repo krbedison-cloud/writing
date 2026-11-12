@@ -1,11 +1,25 @@
 """Compact shared prompts. Score calibration is sent once in its own field."""
+import json
 QUESTION_FIRST = '以question.prompt审题、以question.materials为内容依据；kind只表示20/30/50分训练档，不代表文体。任务、对象、内容、格式和字数按题干，不强加标题、称呼、落款、日期；不套其他题模板，歧义须说明。'
-GRADING_TASK = ('独立批改。返回JSON：'
- '{task_analysis:{task,genre,requirements,material_basis},high_score_answer,high_score_plan:{framework,progression,material_use},high_score_self_check:{word_count,used_rows,complies,format_note},score,dimensions,strengths,weaknesses,suggestions,evidence}。'
+GRADE_JSON = json.dumps({
+ 'task_analysis':{'task':'本题任务','genre':'本题文体','requirements':['题干要求'],'material_basis':['材料依据']},
+ 'high_score_answer':'完整范文，段落用换行字符',
+ 'high_score_plan':{'framework':'论点框架','progression':'递进关系','material_use':['材料编号及用法']},
+ 'high_score_self_check':{'word_count':0,'used_rows':0,'complies':False,'format_note':'最终自检结论'},
+ 'score':0,'dimensions':{name:0 for name in ['审题立意','要点提炼','材料运用','结构逻辑','语言表达','文体规范']},
+ 'strengths':[],'weaknesses':[],'suggestions':[],'evidence':['引用原答说明得失分']
+},ensure_ascii=False,separators=(',',':'))
+REFERENCE_JSON = json.dumps({
+ 'high_score_answer':'完整范文，段落用换行字符',
+ 'high_score_plan':{'framework':'论点框架','progression':'递进关系','material_use':['材料编号及用法']},
+ 'high_score_self_check':{'word_count':0,'used_rows':0,'complies':False,'format_note':'最终自检结论'}
+},ensure_ascii=False,separators=(',',':'))
+JSON_RULES = '只返回一个完整JSON对象，英文键名和文字用双引号，正文换行须转义为\\n，不加说明或代码块。示例只规定结构，实际内容和数字须据本题填写，不照抄示例值。'
+GRADING_TASK = ('独立批改。返回JSON结构：'+GRADE_JSON+JSON_RULES+
  '先据题干、材料独立生成范文及构思说明，再评价answer；评分校准calibration仅评用户原答，不限制范文质量。'
  'task/genre为题干任务/文体，requirements/material_basis为要求/材料依据。所有列表为字符串数组，评语通常2–4条，无优缺点或建议时可空；evidence不可空，须引用原答解释评价。'
  'score按full_score及calibration；dimensions用给定六维中文名为键、0–100数字为值，不嵌套说明。评语简明去重。'+QUESTION_FIRST)
-REFERENCE_FIELDS = '仅生成范文不评分，返回{high_score_answer,high_score_plan:{framework,progression,material_use},high_score_self_check:{word_count,used_rows,complies,format_note}}。'
+REFERENCE_FIELDS = '仅生成范文不评分，返回JSON结构：'+REFERENCE_JSON+JSON_RULES
 REFERENCE_RULES = ('范文独立依据question的题干、材料与给定范文规则构思，保留既定文体、框架与格式要求；用户answer仅供批改，不作范文底稿、提纲、事实来源或要点边界，不沿用其错误与遗漏，也不为求不同避开题内正确要点。'
  '材料外案例仅按专门范文规则的既有例外。previous_reference若提供，是模型旧范文，仅用于校正或增减篇幅，不是用户原答；始终回题干、材料核验。范文完整纯文本，无Markdown或字数附注。'
  '范文完成后按reference_paper_spec（缺省用question.paper_spec）自检，保留必要构思与论证，只返回最终自检结果；rules同名字段优先，否则用question.paper_spec.rules。'

@@ -94,7 +94,14 @@ class MockModel(BaseHTTPRequestHandler):
             result=dict(analysis='材料运用仍需加强，先补齐要点再精简表达。',strengths=['能够坚持完成练习。'],weaknesses=['材料中的具体措施仍有遗漏。'],action_plan=['作答前列出各段措施，写完后逐项核对。','每次复盘一个遗漏要点，并重新写进答案。'])
         else:result={'ok':True}
         self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
-        self.wfile.write(json.dumps({'choices':[{'message':{'content':json.dumps(result,ensure_ascii=False)},'finish_reason':'stop'}]}).encode())
+        if model=='coach-format':
+            # A real HTTP gateway returning text blocks, an introduction, a literal newline and a trailing comma.
+            raw=json.dumps(result,ensure_ascii=False)
+            raw=raw.replace('参考答案，仅用于','参考答案，\n仅用于')
+            raw='以下是批改结果：\n'+raw[:-1]+',}'
+            envelope={'data':{'choices':[{'message':{'content':[{'type':'text','text':raw}]},'finish_reason':'stop'}]}}
+        else:envelope={'choices':[{'message':{'content':json.dumps(result,ensure_ascii=False)},'finish_reason':'stop'}]}
+        self.wfile.write(json.dumps(envelope).encode())
 
 def free_port():
     with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
@@ -757,10 +764,39 @@ def main():
                 page.goto(base+'/#phone');expect(page.get_by_text('LineageOS Android 17',exact=True)).to_be_visible()
                 page.locator('[data-action="phone-pair-code"]').click();expect(page.locator('#phone-pair-code')).to_have_text(re.compile(r'^\d{6}$'))
                 page.screenshot(path='/tmp/shenlun-phone-desktop.png',full_page=True)
+                # Reported regression: old 600 limit versus an explicit 450-character third question.
+                imported=httpx.post(base+'/api/papers/import',files={'file':('2026安徽B卷.pdf',scope_pdf.read_bytes(),'application/pdf')}).json()
+                imported.update(title='2026安徽B卷',year='2026',province='安徽',volume='B卷',confirmed=True)
+                imported['questions']=[dict(number=3,kind='practical',prompt='根据材料1，提出改进建议。要求：不超过450字。',word_min=0,word_max=600,paper_rows=0,material_mode='selected',material_ids=[1])]
+                fixed=httpx.put(base+'/api/papers/'+imported['id'],json=imported)
+                fixed.raise_for_status();fixed=fixed.json();fixed_q=fixed['questions'][0]
+                assert fixed_q['word_max']==450 and fixed_q['paper_spec']['cells']==450
+                page.goto(base+'/#practice/'+fixed['id']+'/'+fixed_q['id'])
+                expect(page.locator('#paper-editor .paper-toolbar')).to_contain_text('25 格 × 18 行 · 共 450 格')
+                expect(page.locator('#paper-grid .paper-cell')).to_have_count(450)
+                page.locator('#answer').fill('甲'*500)
+                expect(page.locator('#paper-warning')).to_contain_text('不属于本题答题纸容量')
+                page.locator('[data-paper-select-overflow]').click();page.locator('#answer').press('Backspace')
+                expect(page.locator('#answer')).to_have_value('甲'*450)
+                expect(page.locator('#paper-grid .paper-cell')).to_have_count(450)
+                page.screenshot(path='/tmp/shenlun-450-grid.png',full_page=True)
+                compatible=httpx.post(base+'/api/providers',json=dict(name='格式兼容教练',protocol='openai',base_url=f'http://127.0.0.1:{mock.server_port}/v1',model='coach-format',api_key='mock-only')).json()
+                attempt_response=httpx.post(base+'/api/attempts',json=dict(question_id=fixed_q['id'],answer='针对材料问题提出具体改进措施。',provider_ids=[compatible['id']],master_id=compatible['id']))
+                attempt_response.raise_for_status();record=attempt_response.json()
+                for _ in range(120):
+                    result=httpx.get(base+'/api/attempts/'+record['attempt_id']).json()
+                    if result['status'] not in ('queued','running'):break
+                    time.sleep(.2)
+                assert result['status']=='completed',result
+                assert result['grades'][0]['status']=='completed' and result['grades'][0]['result']['score']==24
+                assert result['paper_spec']['cells']==450
+                assert received_contexts[-1]['paper_spec']['cells']==450
+                assert '独立材料乙' not in received_contexts[-1]['materials']
+                assert counts['coach-format']==1
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()
-            print('PASS: edited failed interface retry, deleted-interface replacement and master reassignment, master-only recovery without regrading, staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: Anhui B third-question 450-character/18-row sheet and stale 600 repair, whole overflow deletion, wrapped text-block/raw-newline/trailing-comma grading without extra calls; edited failed interface retry, deleted-interface replacement and master reassignment, master-only recovery without regrading, staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)

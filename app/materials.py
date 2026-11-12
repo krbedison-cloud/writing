@@ -2,7 +2,7 @@
 import copy
 import re
 import unicodedata
-from .paper import paper_spec
+from .paper import paper_spec,normalize_question_limits
 from .annotations import material_signature
 
 NUMBER = r'(?:[0-9０-９]{1,3}|[一二三四五六七八九十百零〇两]{1,6})'
@@ -124,8 +124,10 @@ def prepare_paper(paper):
     blocks = split_materials(p['materials'])
     p['material_blocks'] = blocks
     p['materials_version'] = 1
+    p['word_limits_version'] = 2
     p['requires_material_selection'] = False
     for q in p['questions']:
+        q.update(normalize_question_limits(q))
         q.setdefault('material_mode', 'auto')
         q.setdefault('material_ids', [])
         q.setdefault('custom_materials', '')

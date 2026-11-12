@@ -45,7 +45,7 @@ class Service:
         task.add_done_callback(self.tasks.discard)
     def recover(self):
         for paper in self.db.all('papers'):
-            if paper.get('materials_version') != 1:
+            if paper.get('materials_version') != 1 or paper.get('word_limits_version')!=2:
                 prepared = prepare_paper(paper)
                 self.db.put('papers', prepared['id'], prepared, prepared['created_at'])
         for table in ('jobs', 'attempts'):
@@ -106,6 +106,7 @@ class Service:
                 q['id'] = old.get('id', uid())
                 if old.get('prompt') == q['prompt'] and old.get('material_mode') in ('selected','all','custom'):
                     q.update({k:old[k] for k in ('material_mode','material_ids','custom_materials') if k in old})
+                if old.get('prompt')==q['prompt'] and old.get('paper_rows'):q['paper_rows']=old['paper_rows']
             paper.update(parsed, confirmed=False)
             paper = prepare_paper(paper)
             self.db.put('papers', paper_id, paper, paper['created_at'])

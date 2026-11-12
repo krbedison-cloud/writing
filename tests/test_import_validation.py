@@ -35,6 +35,12 @@ class ImportTests(unittest.TestCase):
         self.assertIn('材料2',p['materials']);self.assertFalse(p['confirmed'])
         self.assertEqual(raw['data']['questions'][0]['word_min'],None)
 
+    def test_model_cannot_invent_paper_capacity_or_override_explicit_prompt_limit(self):
+        raw=dict(questions=[dict(number=3,kind='practical',prompt='请提出建议，要求不超过450字。',word_max=600,paper_rows=24)])
+        q=normalize_import(raw,PAPER)['questions'][0]
+        self.assertEqual((q['word_max'],q['paper_rows']),(450,0))
+        self.assertEqual(raw['questions'][0]['paper_rows'],24)
+
     def test_core_missing_unknown_kind_and_invalid_limits_rejected(self):
         for q in [dict(number=1,kind='summary'),dict(number=1,kind='unknown',prompt='完整题干文字'),dict(number=1,kind='essay',prompt='完整题干文字',word_max=9000)]:
             with self.assertRaises(ValidationError) as caught:normalize_import(dict(questions=[q]),PAPER)
@@ -80,8 +86,9 @@ class ClassificationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_manual_choice_preserved_for_unchanged_question(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db=Database(tmp);p=copy.deepcopy(PAPER);p['questions'][0].update(material_mode='selected',material_ids=[2])
+            db=Database(tmp);p=copy.deepcopy(PAPER);p['questions'][0].update(material_mode='selected',material_ids=[2],paper_rows=16)
             db.put('papers','p',p,p['created_at']);service=Service(db)
             with patch.object(service,'provider',return_value={}),patch.object(service,'ask',new=AsyncMock(return_value=PAPER)):
                 j=service.job('classification','p');await service.classify(j,'p','provider')
             self.assertEqual(db.get('papers','p')['questions'][0]['material_ids'],[2])
+            self.assertEqual(db.get('papers','p')['questions'][0]['paper_rows'],16)

@@ -25,6 +25,11 @@ class ProviderInput(BaseModel):
         return self
 
 class QuestionInput(BaseModel):
+    @model_validator(mode='before')
+    @classmethod
+    def limits_from_prompt(cls,value):
+        from .paper import normalize_question_limits
+        return normalize_question_limits(value) if isinstance(value,dict) and isinstance(value.get('prompt'),str) else value
     number: int = Field(ge=1, le=100)
     kind: Literal["summary", "practical", "essay"]
     prompt: str = Field(min_length=4, max_length=16000)
