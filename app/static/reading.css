@@ -240,3 +240,7 @@ footer { font-size: 12px; color: var(--muted); }
 
 .reference-plan { border-top: 1px solid var(--line); padding-top: 20px; }
 .reference-plan h5 { font-size: 16px; margin: 18px 0 6px; color: var(--green); }
+
+.phone-incoming { border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin: 12px 0; background: var(--paper); }
+.phone-pair-code { font-size: 40px; letter-spacing: .2em; font-weight: 700; color: var(--green); margin: 18px 0; font-variant-numeric: tabular-nums; }
+#phone-capture-inbox:empty { display: none; }

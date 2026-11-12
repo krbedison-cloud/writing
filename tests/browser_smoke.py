@@ -4,6 +4,7 @@ Requires Playwright + a browser; CHROMIUM_EXECUTABLE may select system Chromium.
 """
 import argparse
 import json
+import uuid
 import os
 import re
 import shutil
@@ -713,6 +714,49 @@ def main():
                     expect(page.locator('[name="timeout_seconds"]')).to_have_value('900')
                     expect(page.locator('[name="reasoning_effort"]')).not_to_be_visible()
                     page.locator('[data-action="close-dialog"]').click()
+                # Native phone OCR writes only to a durable inbox, then the desktop chooses how to apply it.
+                phone_counts=dict(counts)
+                paircode=httpx.post(base+'/api/phone/pair-code').json()['code']
+                paired=httpx.post(base+'/api/mobile/pair',json={'code':paircode,'device_name':'LineageOS Android 17'}).json()
+                phone_headers={'Authorization':'Bearer '+paired['token']}
+                phone_questions=httpx.get(base+'/api/mobile/papers/'+expected['id']+'/questions',headers=phone_headers).json()['questions']
+                phone_question=phone_questions[0]
+                page.goto(base+'/#practice/'+expected['id']+'/'+phone_question['id'])
+                original_draft='电脑上正在写的草稿，不能被手机同步覆盖。'
+                page.locator('#answer').fill(original_draft)
+                capture_body=dict(request_id=str(uuid.uuid4()),question_signature=phone_question['question_signature'],text='　　手机识别的第一段文字。',model='vision-mock')
+                capture_url=base+'/api/mobile/papers/'+expected['id']+'/questions/'+phone_question['id']+'/captures'
+                incoming=httpx.post(capture_url,json=capture_body,headers=phone_headers).json()
+                expect(page.locator('#phone-capture-inbox .phone-incoming')).to_have_count(1,timeout=12000)
+                expect(page.locator('#answer')).to_have_value(original_draft)
+                page.locator('[data-phone-operation="append"]').click()
+                merged=original_draft+'\n'+capture_body['text']
+                expect(page.locator('#answer')).to_have_value(merged)
+                expect(page.locator('#phone-capture-inbox .phone-incoming')).to_have_count(0)
+                repeated=httpx.post(capture_url,json=capture_body,headers=phone_headers).json()
+                assert repeated['id']==incoming['id'] and repeated['status']=='accepted'
+                page.locator('#phone-restore-draft').click();expect(page.locator('#answer')).to_have_value(original_draft)
+                page.locator('#phone-restore-draft').click();expect(page.locator('#answer')).to_have_value(merged)
+                page.locator('#answer').fill('')
+                automatic=dict(capture_body,request_id=str(uuid.uuid4()),text='　　空草稿自动接收手机文字。')
+                httpx.post(capture_url,json=automatic,headers=phone_headers).raise_for_status()
+                expect(page.locator('#answer')).to_have_value(automatic['text'],timeout=12000)
+                page.reload();expect(page.locator('#answer')).to_have_value(automatic['text'])
+                assert counts==phone_counts
+                page.goto(base+'/#phone')
+                stale=dict(capture_body,request_id=str(uuid.uuid4()),text='旧题干同步过来的文字，不能自动插入变更后的题目。')
+                httpx.post(capture_url,json=stale,headers=phone_headers).raise_for_status()
+                changed_paper=httpx.get(base+'/api/papers/'+expected['id']).json()
+                changed_paper['questions'][0]['prompt']+='（电脑端校对更新）'
+                httpx.put(base+'/api/papers/'+expected['id'],json=changed_paper).raise_for_status()
+                page.goto(base+'/#practice/'+expected['id']+'/'+phone_question['id'])
+                page.locator('#answer').fill('')
+                expect(page.get_by_text('本题在同步后已修改',exact=False)).to_be_visible(timeout=12000)
+                page.wait_for_timeout(3000);expect(page.locator('#answer')).to_have_value('')
+                page.locator('[data-phone-operation="replace"]').click();expect(page.locator('#answer')).to_have_value(stale['text'])
+                page.goto(base+'/#phone');expect(page.get_by_text('LineageOS Android 17',exact=True)).to_be_visible()
+                page.locator('[data-action="phone-pair-code"]').click();expect(page.locator('#phone-pair-code')).to_have_text(re.compile(r'^\d{6}$'))
+                page.screenshot(path='/tmp/shenlun-phone-desktop.png',full_page=True)
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()

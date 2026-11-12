@@ -26,8 +26,29 @@ jobs:
       - run: node --test tests/test_practice_timer.cjs
       - run: bash -n install.sh
       - run: docker compose -f compose.deploy.yaml config --quiet
-  publish:
+  android:
     needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
+        working-directory: android
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-verification
+          path: |
+            android/app/build/reports/
+            android/app/build/outputs/screenshots/
+          retention-days: 7
+  publish:
+    needs: [test, android]
     outputs:
       version: ${{ steps.version.outputs.version }}
     runs-on: ubuntu-latest

@@ -33,7 +33,10 @@ class Database:
             CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS highlights(id TEXT PRIMARY KEY, question_id TEXT NOT NULL, signature TEXT NOT NULL, data TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS highlights_question ON highlights(question_id,signature);
-            PRAGMA user_version=2;
+            CREATE TABLE IF NOT EXISTS mobile_devices(id TEXT PRIMARY KEY,name TEXT NOT NULL,token_hash TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL,last_seen_at TEXT NOT NULL,revoked INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS mobile_captures(id TEXT PRIMARY KEY,paper_id TEXT NOT NULL,question_id TEXT NOT NULL,device_id TEXT NOT NULL,request_id TEXT NOT NULL,status TEXT NOT NULL,data TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(device_id,request_id));
+            CREATE INDEX IF NOT EXISTS mobile_capture_question ON mobile_captures(question_id,status);
+            PRAGMA user_version=3;
             ''')
     @contextmanager
     def connect(self):

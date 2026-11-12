@@ -17,6 +17,7 @@ from .annotations import canonical_text
 from .paper import check_paper
 from .service import Service, uid, now, public_error
 from .llm import ModelError
+from .mobile import MobileBridge, mount_mobile_routes, signature as phone_signature
 
 STATIC = Path(__file__).parent / 'static'
 LAN_NETWORKS = tuple(ipaddress.ip_network(cidr) for cidr in (
@@ -41,6 +42,7 @@ def permitted_host(host):
 def create_app(data_dir=None):
     db = Database(data_dir or os.getenv('DATA_DIR', str(Path(__file__).resolve().parent.parent / 'data')))
     service = Service(db)
+    bridge = MobileBridge(db)
     @asynccontextmanager
     async def lifespan(app):
         service.recover()
@@ -54,8 +56,14 @@ def create_app(data_dir=None):
     async def guard(request, call_next):
         if request.url.path == '/health':
             return await call_next(request)
+        mobile_request=request.url.path.startswith('/api/mobile/')
+        if mobile_request and request.url.path!='/api/mobile/pair':
+            try:request.state.mobile_device=bridge.authenticate(request.headers.get('authorization'))
+            except HTTPException as exc:return JSONResponse({'detail':exc.detail},status_code=exc.status_code)
+        elif not mobile_request and request.headers.get('authorization','').lower().startswith('bearer '):
+            return JSONResponse({'detail':'手机连接仅可用于查看真题及同步录入'},status_code=403)
         password = os.getenv('APP_PASSWORD', '')
-        if password:
+        if password and not mobile_request:
             import base64
             try:
                 scheme, token = request.headers.get('authorization','').split(' ', 1)
@@ -158,13 +166,14 @@ def create_app(data_dir=None):
         q = next((q for q in p['questions'] if q['id'] == question_id), None)
         if not q:
             raise HTTPException(404, '题目不存在')
-        return {'paper':{k:p[k] for k in ('id','title','year','province','volume','confirmed')}, 'question':q}
+        return {'paper':{k:p[k] for k in ('id','title','year','province','volume','confirmed')}, 'question':dict(q,mobile_input_signature=phone_signature(id,q))}
     def question_data(paper_id, question_id):
         p = get_paper(paper_id)
         q = next((q for q in p['questions'] if q['id']==question_id),None)
         if not q:
             raise HTTPException(404,'题目不存在')
         return q
+    mount_mobile_routes(app,bridge,get_paper,question_data)
     @app.get('/api/papers/{id}/questions/{question_id}/highlights')
     def highlights(id: str, question_id: str):
         q = question_data(id,question_id)
@@ -343,7 +352,7 @@ def create_app(data_dir=None):
         return j
     @app.get('/api/export')
     def export():
-        return Response(dumps({'version':1,'exported_at':now(),'papers':db.all('papers'),'attempts':db.all('attempts'),'portrait':db.setting('portrait'),'highlights':[json.loads(r['data']) for r in db.rows('SELECT data FROM highlights ORDER BY rowid')]}), media_type='application/json',headers={'Content-Disposition':'attachment; filename="shenlun-history.json"'})
+        return Response(dumps({'version':1,'exported_at':now(),'papers':db.all('papers'),'attempts':db.all('attempts'),'portrait':db.setting('portrait'),'highlights':[json.loads(r['data']) for r in db.rows('SELECT data FROM highlights ORDER BY rowid')],'phone_captures':[json.loads(r['data']) for r in db.rows('SELECT data FROM mobile_captures ORDER BY rowid')]}), media_type='application/json',headers={'Content-Disposition':'attachment; filename="shenlun-history.json"'})
     app.mount('/static', StaticFiles(directory=STATIC), name='static')
     return app
 

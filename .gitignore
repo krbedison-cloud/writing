@@ -5,3 +5,8 @@ __pycache__/
 *.pyc
 .coverage
 playwright-report/
+android/.gradle/
+android/**/build/
+android/local.properties
+android/signing.properties
+android/.signing/

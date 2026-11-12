@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh | bash
 ```
 
-安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.27` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
+安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.28` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
 
 配置保存在 `~/shenlun-studio/.env`，程序只监听本机 `18086` 端口；数据使用 Docker 数据卷 `shenlun-studio-data`。安装脚本会输出实际访问地址和停止命令。重复运行安装命令不会覆盖已有 `.env`；如版本配置文件已有人工修改，会停止而不是覆盖。发布的新版本可以通过再次执行安装命令更新，既有数据保留。
 
@@ -39,7 +39,7 @@ SHENLUN_DIR="$HOME/Applications/shenlun-studio" bash install-shenlun.sh
 公开镜像可直接拉取：
 
 ```bash
-docker pull ghcr.io/krbedison-cloud/writing:v0.1.27
+docker pull ghcr.io/krbedison-cloud/writing:v0.1.28
 ```
 
 GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架构镜像并创建对应标签的 Release。发布新版本时同步更新 VERSION、安装脚本默认版本与部署配置。GHCR 首次创建的包可能是私有的；仓库拥有者可到 GitHub 的 Packages → writing → Package settings 将包设为 Public，之后无需登录即可拉取。即使没有更改包的可见性，上面的安装器仍能使用公开 Release 中的预构建 Docker 镜像完成安装，不必登录 GHCR。
@@ -49,7 +49,7 @@ GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架
 在运行 Docker Desktop 的 Mac mini 上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.27/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.28/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
 ```
 
 安装器会保留已有数据和其他配置，持久设置 `APP_BIND=0.0.0.0`、`ALLOW_LAN=1` 以及指定端口。Docker 会在 Mac 所有 IPv4 接口监听 `18086`，应用允许以私有局域网 IP 访问；原来的主机白名单和同源写入检查仍有效。IP 变化后通常不需要重新配置白名单。
@@ -63,7 +63,7 @@ Mac 防火墙如提示 Docker 接收入站连接，选择允许。设备需要�
 恢复仅本机访问：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.27/install.sh | SHENLUN_LAN=0 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.28/install.sh | SHENLUN_LAN=0 bash
 ```
 
 未指定 `SHENLUN_LAN` 时，保留现有的访问模式。
@@ -301,3 +301,14 @@ API 辅助识别兼容数字年份、中文训练题型、空值字数、文字�
 优先级由程序本地计算，仅额外传递简短编号，不发送其他小题的题干、答案或重复材料，不新增API调用。人工选范围优先；人工粘贴材料须能与原编号材料完整对应，否则提示范围不可靠并正常取材，不猜测禁用。所有本题允许材料仍完整传给模型；若前题已涉及全部材料，也按本题需要正常使用。
 
 新作答保存提交时的优先级快照，后续编辑源试卷不改旧作答；各范文版本保留自己的优先级并在界面展示。旧作答没有该快照时，仅在源试卷的大作文题干与完整材料仍匹配的情况下，按当前校对范围为新范文计算，并明确标注；不匹配时正常取材，不回写旧快照、范文或评分。
+
+
+### 安卓拍照录入伴侣（v0.1.28）
+
+新增原生安卓 App **申论随拍**：[下载正式签名 APK](https://github.com/krbedison-cloud/writing/releases/download/v0.1.28/shenlun-companion.apk)。兼容Android10+，采用Material3、系统取色、深浅色和全面屏布局。正式包约2.4MB，面向轻量录入设计；Android17/LineageOS与骁龙865实机性能仍需实际设备验证。
+
+电脑更新后，左侧「手机拍照录入」可生成十分钟、一次性的六位配对码。手机与Mac处于同一局域网，在App填写Mac的IP及端口和配对码，再独立配置OCR专用视觉模型（OpenAI兼容 / Claude / Gemini）。选择同一套真题的某题，拍照或从相册导入、旋转排序、多页识别、校对后同步。照片直接发至所配置的OCR接口，电脑只收到文字；手机不提供批改和画像，不读取电脑模型密钥。
+
+电脑打开该题练习页：空草稿自动录入；有文字时提供追加、替换并备份、忽略。题目或材料在同步后改变时仅提示，不自动插入。同步不会提交批改或改写历史作答，原答仍由你手动提交。手机按题保存照片与文字，重试有防重复编号；电脑持久保存接收记录，并纳入JSON导出，升级沿用原数据卷。可在电脑撤销某台手机的配对。
+
+详见 [安卓使用、性能与构建说明](android/README.md)。正式APK由私有签名发布，签名私钥不进入仓库；CI验证安卓构建、Lint、协议、图片与Compose界面。手机录入使用受限配对接口，原有电脑管理密码与主机、同源写入检查继续有效。
