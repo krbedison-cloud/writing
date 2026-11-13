@@ -51,12 +51,23 @@ class MockModel(BaseHTTPRequestHandler):
             if payload['question']['kind']=='practical':assert payload['calibration']==PRACTICAL_CALIBRATION
             received_contexts.append(payload['question'])
             counts[model]=counts.get(model,0)+1
+            if model=='coach-disconnect' and counts[model]==1:
+                # The POST body has arrived: reconnecting here could duplicate billing.
+                self.close_connection=True
+                try:self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:pass
+                self.connection.close()
+                return
             if model=='coach-b' and counts[model]==1:
                 self.send_response(429);self.end_headers();self.wfile.write(b'mock rate limit');return
             if model=='coach-truncated' and (body.get('max_completion_tokens') or body.get('max_tokens'))<32768:
                 self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
                 self.wfile.write(json.dumps({'choices':[{'finish_reason':'length','message':{'content':'partial'}}],'usage':{'completion_tokens':6000,'completion_tokens_details':{'reasoning_tokens':5900}}}).encode());return
             result=dict(score=payload['full_score']-(4 if model=='coach-a' else 6),dimensions={k:70 for k in DIMENSIONS},strengths=['观点清晰'],weaknesses=['材料要点尚有遗漏'],suggestions=['分类概括关键措施'],evidence=['原答案“加强建设”需要展开具体措施'],high_score_plan=PLAN,high_score_answer='这是模拟接口生成的参考答案，仅用于验证调用与存档流程，不是真实模型批改。',task_analysis=dict(task=payload['question']['prompt'],genre='按本题题干审题',requirements=[payload['question']['prompt']],material_basis=[payload['question']['materials'][:80]]))
+            if model in ('coach-object','coach-disconnect'):result['high_score_answer']=PROSE
+            if model=='coach-object':
+                result['evidence']=[dict(quote='加强建设',analysis='缺少具体措施',deduction=2)]
+                result['strengths']=[dict(point='观点清楚',reason='围绕题干展开')]
             if model=='coach-source':result['high_score_answer']='材料1中，某地搭建服务平台，推动政策落地，提升服务质效。'
         elif task.startswith(('范文校正','单独重写高分范文')):
             if payload['question']['kind']=='essay':assert 'reference_material_priority' in payload['question']
@@ -109,6 +120,7 @@ class MockModel(BaseHTTPRequestHandler):
             raw='以下是批改结果：\n'+raw[:-1]+',}'
             envelope={'data':{'choices':[{'message':{'content':[{'type':'text','text':raw}]},'finish_reason':'stop'}]}}
         else:envelope={'choices':[{'message':{'content':json.dumps(result,ensure_ascii=False)},'finish_reason':'stop'}]}
+        if model=='coach-object':envelope['usage']=dict(prompt_tokens=3344,prompt_cache_hit_tokens=0,completion_tokens=5669,completion_tokens_details=dict(reasoning_tokens=4671))
         self.wfile.write(json.dumps(envelope).encode())
 
 def free_port():
@@ -828,10 +840,43 @@ def main():
                 page.locator('.reference-version').select_option(refs[-1]['id'])
                 expect(page.locator('#review-body .answer-reference')).to_have_text(PROSE)
                 expect(page.locator('#review-body .reference-paper-target .paper-cell')).to_have_count(450)
+                # The reported GLM evidence shape succeeds; a real submitted POST
+                # disconnect is kept separate and only that failed coach is retried.
+                object_coach=httpx.post(base+'/api/providers',json=dict(name='结构化证据教练',protocol='openai',base_url=f'http://127.0.0.1:{mock.server_port}/v1',model='coach-object',api_key='mock-only')).json()
+                dropped_coach=httpx.post(base+'/api/providers',json=dict(name='断线教练',protocol='openai',base_url=f'http://127.0.0.1:{mock.server_port}/v1',model='coach-disconnect',api_key='mock-only')).json()
+                network_job=httpx.post(base+'/api/attempts',json=dict(question_id=fixed_q['id'],answer='加强建设，改善服务。',provider_ids=[object_coach['id'],dropped_coach['id']],master_id=object_coach['id'])).json()
+                for _ in range(120):
+                    network_result=httpx.get(base+'/api/attempts/'+network_job['attempt_id']).json()
+                    if network_result['status'] not in ('queued','running'):break
+                    time.sleep(.2)
+                assert network_result['status']=='partial',network_result
+                preserved=next(g for g in network_result['grades'] if g['provider_id']==object_coach['id'])
+                failure=next(g for g in network_result['grades'] if g['provider_id']==dropped_coach['id'])
+                assert preserved['status']=='completed' and preserved['usage']['output_tokens']==5669
+                assert '原答引文：加强建设' in preserved['result']['evidence'][0]
+                assert '分析：缺少具体措施' in preserved['result']['evidence'][0] and '扣分：2' in preserved['result']['evidence'][0]
+                assert failure['error_code'] in ('response_disconnected','response_read_failed')
+                assert failure['error_phase']=='waiting_response'
+                assert counts['coach-disconnect']==1 and counts['coach-object']==1
+                page.goto(base+'/#attempt/'+network_job['attempt_id'])
+                expect(page.locator('#review-body')).to_contain_text('原答引文：加强建设')
+                expect(page.locator('#review-body')).to_contain_text('扣分：2')
+                expect(page.locator('#review-body')).not_to_contain_text('[object Object]')
+                failed_card=page.locator('.score-card[data-provider="'+dropped_coach['id']+'"]')
+                expect(failed_card).to_contain_text('等待响应')
+                failed_card.locator('[data-action="retry-coach"]').click()
+                for _ in range(120):
+                    recovered=httpx.get(base+'/api/attempts/'+network_job['attempt_id']).json()
+                    if recovered['status']=='completed':break
+                    time.sleep(.2)
+                assert recovered['status']=='completed'
+                assert next(g for g in recovered['grades'] if g['provider_id']==object_coach['id'])==preserved
+                assert recovered['answer']=='加强建设，改善服务。'
+                assert counts['coach-disconnect']==2 and counts['coach-object']==1
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()
-            print('PASS: paragraph wrapper cleanup preserves normal quotes/book titles and exact paper counts without extra requests, source-language repair once without regrading and historical version warning; nullable AI counters with exact program accounting and no spurious mismatch; Anhui B third-question 450-character/18-row sheet and stale 600 repair, whole overflow deletion, wrapped text-block/raw-newline/trailing-comma grading without extra calls; edited failed interface retry, deleted-interface replacement and master reassignment, master-only recovery without regrading, staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: GLM evidence objects preserve quote/analysis/deduction and usage in one call, actual HTTP POST disconnect is not automatically resent and targeted retry preserves the completed coach; paragraph wrapper cleanup preserves normal quotes/book titles and exact paper counts without extra requests, source-language repair once without regrading and historical version warning; nullable AI counters with exact program accounting and no spurious mismatch; Anhui B third-question 450-character/18-row sheet and stale 600 repair, whole overflow deletion, wrapped text-block/raw-newline/trailing-comma grading without extra calls; edited failed interface retry, deleted-interface replacement and master reassignment, master-only recovery without regrading, staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)

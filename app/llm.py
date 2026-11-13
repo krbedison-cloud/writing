@@ -1,6 +1,8 @@
 import asyncio
 import json
 import re
+import socket
+import ssl
 import httpx
 from urllib.parse import urlsplit
 from .model_limits import next_token_limit
@@ -46,7 +48,11 @@ def request_message(task,payload):
     return json.dumps({'task':task,'data':ordered},ensure_ascii=False,separators=(',',':'))
 
 class ModelError(Exception):
-    pass
+    def __init__(self,message,*,code=None,phase=None,connection_retries=0):
+        super().__init__(message)
+        self.code=code
+        self.phase=phase
+        self.connection_retries=connection_retries
 
 class TruncatedOutputError(ModelError):
     def __init__(self,limit,usage):
@@ -60,7 +66,8 @@ class TruncatedOutputError(ModelError):
         super().__init__(detail)
 
 class ModelResult(dict):
-    def __init__(self,value,usage):super().__init__(value);self.usage=usage
+    def __init__(self,value,usage,connection_retries=0):
+        super().__init__(value);self.usage=usage;self.connection_retries=connection_retries
 
 def usage_metrics(data,protocol):
     raw=data.get('usageMetadata' if protocol=='gemini' else 'usage') or {}
@@ -267,6 +274,55 @@ def http_error(response, provider, body):
         if name in body:detail+=f'；本次 {name}={body[name]}'
     return ModelError(detail+'（响应原文不保存）')
 
+
+def _causes(exc):
+    seen=set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc));yield exc
+        exc=exc.__cause__ or exc.__context__
+
+
+def _permanent_connection_failure(exc):
+    return any(isinstance(cause,ssl.SSLCertVerificationError) or
+               (isinstance(cause,socket.gaierror) and cause.errno!=socket.EAI_AGAIN)
+               for cause in _causes(exc))
+
+
+def transport_error(exc,phase,reconnects,budget):
+    # Never reflect exception messages, upstream bodies, URLs or credentials.
+    causes=list(_causes(exc))
+    if any(isinstance(cause,ssl.SSLCertVerificationError) for cause in causes):
+        code,phase,reason='tls_certificate','connecting','TLS证书校验失败，请检查该接口或代理的证书配置'
+    elif any(isinstance(cause,socket.gaierror) for cause in causes):
+        code,phase,reason='dns_failure','connecting','接口域名解析失败，请核对根地址及DNS连接'
+    elif isinstance(exc,httpx.ConnectTimeout):
+        code,phase,reason='connect_timeout','connecting',f'建立连接超时（单次连接上限 {min(20,budget):g} 秒，总等待上限 {budget:g} 秒）'
+    elif isinstance(exc,(TimeoutError,httpx.TimeoutException)):
+        code='response_timeout' if isinstance(exc,httpx.ReadTimeout) else 'request_timeout'
+        if isinstance(exc,httpx.ReadTimeout) and phase=='connecting':phase='waiting_response'
+        reason=f'接口超时（本次等待上限 {budget:g} 秒），可在模型设置调整等待时限'
+    elif isinstance(exc,httpx.ConnectError):
+        if phase=='connecting':code,reason='connect_failed','接口连接未建立（ConnectError），请检查地址、网络或服务商状态'
+        else:code,reason='transport_failed_after_send','请求发出后连接中断（ConnectError）'
+    elif isinstance(exc,httpx.ProxyError):
+        code,phase,reason='proxy_failed','connecting','代理连接失败（ProxyError），请检查Docker或系统代理配置'
+    elif isinstance(exc,httpx.RemoteProtocolError):
+        code,reason='response_disconnected','连接在完整响应返回前中断（RemoteProtocolError）'
+        if phase=='connecting':phase='waiting_response'
+    elif isinstance(exc,httpx.ReadError):
+        code,reason='response_read_failed','响应读取中断（ReadError）'
+        if phase=='connecting':phase='waiting_response'
+    elif isinstance(exc,httpx.WriteError):
+        code,phase,reason='request_write_failed','sending_request','请求发送中断（WriteError）'
+    elif isinstance(exc,httpx.DecodingError):
+        code,phase,reason='response_decoding_failed','reading_response','接口响应压缩或编码无法解码（DecodingError）'
+    else:code,reason='transport_failed','接口传输失败（HTTPError）'
+    stages={'connecting':'建立连接','sending_request':'发送请求','waiting_response':'等待响应','reading_response':'读取响应'}
+    detail=reason+'；阶段：'+stages.get(phase,'传输')
+    if reconnects:detail+=f'；连接阶段已重连 {reconnects} 次'
+    detail+='。原答案已保留，可单独重试该教练'
+    return ModelError(detail,code=code,phase=phase,connection_retries=reconnects)
+
 async def call_model(provider, task, payload):
     message = request_message(task,payload)
     if len(message) > 160000:
@@ -292,16 +348,33 @@ async def call_model(provider, task, payload):
         body = {'model':provider['model'],'messages':[{'role':'system','content':SYSTEM},{'role':'user','content':message}],output_parameter(provider):limit}
     if supports_reasoning_effort(provider) and provider.get('reasoning_effort','default')!='default':
         body['reasoning_effort']=provider['reasoning_effort']
+    phase='connecting'
+    reconnects=0
+    async def trace(event,info):
+        nonlocal phase
+        if event.endswith(('connect_tcp.started','start_tls.started')):phase='connecting'
+        elif event.endswith('send_request_headers.started'):phase='sending_request'
+        elif event.endswith('receive_response_headers.started'):phase='waiting_response'
+        elif event.endswith(('receive_response_headers.complete','receive_response_body.started')):phase='reading_response'
     try:
         async with asyncio.timeout(timeout_seconds), httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=min(20, timeout_seconds)), follow_redirects=False) as client:
-            response = await client.post(url, headers=headers, json=body)
+            async def post():
+                nonlocal reconnects,phase
+                while True:
+                    phase='connecting'
+                    try:return await client.post(url,headers=headers,json=body,extensions={'trace':trace})
+                    except (httpx.ConnectError,httpx.ConnectTimeout) as exc:
+                        if reconnects or phase!='connecting' or _permanent_connection_failure(exc):raise
+                        await asyncio.sleep(.15)
+                        reconnects+=1
+            response = await post()
             # Some OpenAI-compatible gateways only accept max_tokens.
             if protocol=='openai' and response.status_code==400:
                 selected=next(name for name in ('max_completion_tokens','max_tokens') if name in body)
                 if rejected_parameter(response,selected):
                     alternate='max_tokens' if selected=='max_completion_tokens' else 'max_completion_tokens'
                     body[alternate]=body.pop(selected)
-                    response=await client.post(url,headers=headers,json=body)
+                    response=await post()
             if response.status_code >= 300:
                 raise http_error(response,provider,body)
             if response.text.lstrip('\ufeff \t\r\n').startswith(('data:','event:',':')):
@@ -311,12 +384,10 @@ async def call_model(provider, task, payload):
                 except ValueError:raise ModelError('接口返回的外层正文不是JSON或标准SSE；请核对协议或网关，原答案已保留')
             if isinstance(data,dict) and data.get('error'):raise http_error(response,provider,body)
             content,usage=response_content(data,protocol,limit)
-            return ModelResult(parse_json(content),usage)
+            return ModelResult(parse_json(content),usage,connection_retries=reconnects)
     except ModelError:
         raise
-    except (TimeoutError, httpx.TimeoutException) as exc:
-        raise ModelError(f'接口超时（本次等待上限 {timeout_seconds:g} 秒），已保留作答；可在模型设置调高超时后重试该教练') from exc
-    except httpx.HTTPError as exc:
-        raise ModelError('接口连接失败，原答案已保留，请检查网络后单独重试') from exc
+    except (TimeoutError,httpx.HTTPError) as exc:
+        raise transport_error(exc,phase,reconnects,timeout_seconds) from exc
     except (KeyError, IndexError, ValueError, TypeError,AttributeError) as exc:
         raise ModelError('接口最终正文结构无法识别，原答案已保留；请核对所选协议与网关格式') from exc

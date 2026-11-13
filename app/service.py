@@ -291,6 +291,7 @@ class Service:
                 raw = await self.ask(p, GRADING_TASK+REFERENCE_RULES+reference_policy(q)+PLAN_RULES, {'full_score':full, 'dimensions':DIMENSIONS, 'rubric': TASK_RUBRIC, 'grading_policy': GRADING_POLICY, 'calibration':calibration(q), 'question':q, 'answer':a['answer'], 'answer_layout':check_paper(a['answer'],q['paper_spec']), **reference_payload(q)}, on_start=lambda:progress(g,'requesting'))
                 g['response_received_at']=now()
                 if getattr(raw,'usage',None):g['usage']=raw.usage
+                if getattr(raw,'connection_retries',0):g['connection_retries']=raw.connection_retries
                 progress(g,'validating')
                 result = Grade.model_validate(raw)
                 if result.score > full:
@@ -305,6 +306,13 @@ class Service:
                     repair_tasks.append(asyncio.create_task(repair_for_grade(p,g,original_reference)))
             except Exception as exc:
                 g.update(status='failed',error=public_error(exc),finished_at=now())
+                if isinstance(exc,ModelError):
+                    if exc.code:g['error_code']=exc.code
+                    if exc.phase:g['error_phase']=exc.phase
+                    if exc.connection_retries:g['connection_retries']=exc.connection_retries
+                elif isinstance(exc,ValidationError):
+                    g['error_code']='model_validation_failed'
+                    g['error_phase']='validating'
                 if isinstance(exc,TruncatedOutputError):
                     g.update(error_code='output_truncated',token_limit=exc.token_limit,suggested_token_limit=exc.suggested_token_limit,usage=exc.usage)
                 progress(g,'failed')

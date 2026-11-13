@@ -867,6 +867,44 @@ class AppTests(unittest.TestCase):
         self.assertEqual(updated['providers'],a['providers'])
         self.assertEqual(updated['master']['model'],'other')
 
+    def test_glm_evidence_objects_are_saved_without_regrading_or_score_changes(self):
+        from app.llm import ModelResult
+        async def objects(provider,task,data):
+            if task.startswith('独立批改'):
+                raw=dict(grade(16),evidence=[{'quote':'加强建设','analysis':'缺少具体措施','deduction':2}])
+                return ModelResult(raw,dict(input_tokens=3344,output_tokens=5669,reasoning_tokens=4671))
+            return await fake_model(provider,task,data)
+        p=self.make_paper()
+        with patch('app.service.call_model',side_effect=objects) as mock:a=self.submit(p)
+        self.assertEqual(a['status'],'completed');self.assertEqual(a['mean_score'],16)
+        g=a['grades'][0];self.assertEqual(g['usage']['output_tokens'],5669)
+        self.assertIn('原答引文：加强建设',g['result']['evidence'][0])
+        self.assertIn('分析：缺少具体措施',g['result']['evidence'][0])
+        self.assertIn('扣分：2',g['result']['evidence'][0])
+        self.assertEqual(sum(c.args[1].startswith('独立批改') for c in mock.call_args_list),1)
+        saved=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(saved['grades'][0]['result'],g['result'])
+        self.assertEqual(saved['answer'],'加强基础建设，推动绿色创新与产业发展。')
+
+    def test_network_error_code_and_phase_survive_targeted_retry(self):
+        failed=self.add_model('disconnect')
+        async def disconnected(provider,task,data):
+            if task.startswith('独立批改') and provider['model']=='disconnect':
+                raise ModelError('等待响应时连接中断（RemoteProtocolError）',code='response_disconnected',phase='waiting_response')
+            return await fake_model(provider,task,data)
+        with patch('app.service.call_model',side_effect=disconnected):a=self.submit(self.make_paper(),models=[self.master,failed['id']])
+        old=next(g for g in a['grades'] if g['provider_id']==self.master)
+        bad=next(g for g in a['grades'] if g['provider_id']==failed['id'])
+        self.assertEqual(bad['error_code'],'response_disconnected');self.assertEqual(bad['error_phase'],'waiting_response')
+        self.assertEqual(a['status'],'partial')
+        with patch('app.service.call_model',side_effect=fake_model) as mock:
+            r=self.client.post('/api/attempts/'+a['id']+'/retry',json={'provider_id':failed['id']})
+            self.assertEqual(self.wait_job(r.json()['job_id'])['status'],'completed')
+        current=self.client.get('/api/attempts/'+a['id']).json()
+        self.assertEqual(next(g for g in current['grades'] if g['provider_id']==self.master),old)
+        calls=[c for c in mock.call_args_list if c.args[1].startswith('独立批改')]
+        self.assertEqual(len(calls),1);self.assertEqual(calls[0].args[0]['id'],failed['id'])
+
     def test_model_shape_compatibility_and_field_specific_failure(self):
         p=self.make_paper()
         async def compatible(provider,task,data):

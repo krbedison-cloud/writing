@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/main/install.sh | bash
 ```
 
-安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.31` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
+安装器优先拉取 `ghcr.io/krbedison-cloud/writing:v0.1.32` 多架构镜像，Docker 自动选择 M 系列的 ARM64 或 Intel 的 AMD64。若 GHCR 尚未开放匿名拉取，会从公开的 GitHub Release 下载对应架构的预构建镜像并执行 `docker load`；发行文件仍在生成时才下载同版本源码归档并在本机 `docker build`。整个过程不需要 Git、Python 或 Node。
 
 配置保存在 `~/shenlun-studio/.env`，程序只监听本机 `18086` 端口；数据使用 Docker 数据卷 `shenlun-studio-data`。安装脚本会输出实际访问地址和停止命令。重复运行安装命令不会覆盖已有 `.env`；如版本配置文件已有人工修改，会停止而不是覆盖。发布的新版本可以通过再次执行安装命令更新，既有数据保留。
 
@@ -39,7 +39,7 @@ SHENLUN_DIR="$HOME/Applications/shenlun-studio" bash install-shenlun.sh
 公开镜像可直接拉取：
 
 ```bash
-docker pull ghcr.io/krbedison-cloud/writing:v0.1.31
+docker pull ghcr.io/krbedison-cloud/writing:v0.1.32
 ```
 
 GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架构镜像并创建对应标签的 Release。发布新版本时同步更新 VERSION、安装脚本默认版本与部署配置。GHCR 首次创建的包可能是私有的；仓库拥有者可到 GitHub 的 Packages → writing → Package settings 将包设为 Public，之后无需登录即可拉取。即使没有更改包的可见性，上面的安装器仍能使用公开 Release 中的预构建 Docker 镜像完成安装，不必登录 GHCR。
@@ -49,7 +49,7 @@ GitHub Actions 在推送 main 时运行测试，根据 `VERSION` 构建两种架
 在运行 Docker Desktop 的 Mac mini 上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.31/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.32/install.sh | SHENLUN_LAN=1 SHENLUN_PORT=18086 bash
 ```
 
 安装器会保留已有数据和其他配置，持久设置 `APP_BIND=0.0.0.0`、`ALLOW_LAN=1` 以及指定端口。Docker 会在 Mac 所有 IPv4 接口监听 `18086`，应用允许以私有局域网 IP 访问；原来的主机白名单和同源写入检查仍有效。IP 变化后通常不需要重新配置白名单。
@@ -63,7 +63,7 @@ Mac 防火墙如提示 Docker 接收入站连接，选择允许。设备需要�
 恢复仅本机访问：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.31/install.sh | SHENLUN_LAN=0 bash
+curl -fsSL https://raw.githubusercontent.com/krbedison-cloud/writing/v0.1.32/install.sh | SHENLUN_LAN=0 bash
 ```
 
 未指定 `SHENLUN_LAN` 时，保留现有的访问模式。
@@ -352,3 +352,14 @@ API 辅助识别兼容数字年份、中文训练题型、空值字数、文字�
 - 通过合并旧说明加入新约束，上一版提示词长度预算检查继续通过；推理强度、输出上限和其他功能保留。安卓继续使用v0.1.28，无需重装。
 
 验证：150项后端测试、7项计时器测试与Chromium完整流程，接口均使用本地模拟服务。覆盖引号清理、正常引用保留、字数格数一致、正文材料引用的一次修订、历史版本、手机同步和现有批改功能。
+
+
+### v0.1.32：结构化评分证据与网络故障处理
+
+- 修复“评分证据：需为纯文字”：常见的引文、分析、扣分对象会在本地完整转为可读文字，兼容中英文键名、混合列表、单个证据对象和编号条目；原有字符串保留。优缺点、建议、汇总等文字列表可使用同一兼容规则，不为格式转换重新调用模型。
+- 只转换可识别的叙述结构，不丢弃未知对象、不补造证据或分数；缺失证据、未知结构、非数字或越界评分仍校验失败。保留原答案、实际分数、六维分、范文与接口usage。提示词明确证据为字符串数组并给出简短样例，上一版固定长度预算仍通过。
+- 网络错误区分域名解析、TLS证书、建立连接、代理、发送、等待响应和读取响应；记录安全错误码及阶段，不展示异常原文、密钥或上游正文。截图中的旧“连接失败”不足以判断DeepSeek那次的具体故障，新版可定位后续失败阶段。
+- 仅在连接尚未建立时最多重连一次，所有尝试共享原等待上限；证书校验及永久域名错误直接提示。请求已发送后的断连、读取超时或格式失败不自动重发，避免潜在重复费用，继续提供单个失败教练重试与更换接口。成功教练的结果保持。
+- 不改变服务商协议、模型名、推理强度或输出token上限；保留v0.1.31范文清理、精确纸面校验和其他功能。安卓仍使用v0.1.28，无需重装。
+
+验证：163项后端测试、7项计时器测试及Chromium完整流程；接口为本地模拟。包含复现原错误、结构化证据入库、真实HTTP提交后断线、只重试失败教练、连接重连次数、共享截止时间、证书与域名诊断、取消任务及敏感信息不回显。测试不证明用户Mac或服务商网络已恢复。

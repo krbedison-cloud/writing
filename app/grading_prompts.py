@@ -1,23 +1,23 @@
 """Shared task prompts; keep scoring, reference writing and exact layout accounting distinct."""
 import json
 
-PROMPT_VERSION = 'efficient-v2'
+PROMPT_VERSION = 'efficient-v3'
 
 QUESTION_FIRST = '以question.prompt和materials为准；kind只表示20/30/50分训练档，不代表文体。任务、对象、格式、字数按题干，不强加其他题模板；有歧义须说明。'
-JSON_RULES = '仅返回一个完整JSON对象，不加代码块或说明；键和字符串用双引号，正文换行转义为\\n。示例为空结构，须据本题填实，列表均为字符串数组。'
+JSON_RULES = '仅返回一个完整JSON对象，不加代码块或说明；键和字符串用双引号，正文换行转义为\\n。示例仅示结构，须据本题填实，列表均为字符串数组。'
 SELF_CHECK_SHAPE = {'word_count':None,'used_rows':None,'complies':True,'format_note':''}
 PLAN_SHAPE = {'framework':'','progression':'','material_use':[]}
 REFERENCE_SHAPE = {'high_score_answer':'','high_score_plan':PLAN_SHAPE,'high_score_self_check':SELF_CHECK_SHAPE}
 GRADE_JSON = json.dumps({
  'task_analysis':{'task':'','genre':'','requirements':[],'material_basis':[]},**REFERENCE_SHAPE,
- 'score':0,'dimensions':{},'strengths':[],'weaknesses':[],'suggestions':[],'evidence':[]
+ 'score':0,'dimensions':{},'strengths':[],'weaknesses':[],'suggestions':[],'evidence':['引文＋依据']
 },ensure_ascii=False,separators=(',',':'))
 REFERENCE_JSON = json.dumps(REFERENCE_SHAPE,ensure_ascii=False,separators=(',',':'))
 EFFICIENCY_RULES = '完成必要审题后直接形成一版成稿与结论；不枚举多套候选，不逐字列数、模拟格子或反复试排。保留关键分析，不为满足示例数值额外推演。'
 GRADING_TASK = ('独立批改。'+JSON_RULES+GRADE_JSON+QUESTION_FIRST+
  '先独立构思范文，再评价answer；calibration只约束原答评分。score不超过full_score，dimensions按给定六维名称逐项返回0–100数字。'
  'task简述任务，genre为文体；requirements列硬性要求，material_basis列材料编号及要点，均用短句，不复述题干材料。'
- '优缺点、建议通常各2–4条，每条一句；同类合并但不能省略关键漏点。evidence不可空，短引原答并说明得失分依据，避免各字段重复长评。')
+ '优缺点、建议通常各2–4条，每条一句；同类合并但不能省略关键漏点。evidence为非空字符串数组，每项写原答短引文及得失分依据，不返回对象，避免各字段重复长评。')
 REFERENCE_FIELDS = '仅生成范文不评分。'+JSON_RULES+REFERENCE_JSON
 REFERENCE_RULES = ('范文依本题题干、材料和专用规则独立构思；answer仅供批改，不作底稿、提纲或要点边界，不沿用错误遗漏，不刻意避开正确要点。'
  'previous_reference是模型旧范文，仅用于校正/增减篇幅。正文纯文本、实际换行、全角空格缩进，格式按题干。'
