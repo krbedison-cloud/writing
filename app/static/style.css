@@ -235,3 +235,8 @@ footer{font-size:9px}
 
 
 [hidden]{display:none!important}
+
+.forecast-controls{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.forecast-controls .field{flex:1;min-width:180px;margin:0}
+.forecast-controls .btn{white-space:nowrap}
+@media(max-width:520px){.forecast-controls{display:block}.forecast-controls .btn{width:100%;margin-top:12px}}

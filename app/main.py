@@ -17,6 +17,7 @@ from .annotations import canonical_text
 from .paper import check_paper
 from .service import Service, uid, now, public_error
 from .llm import ModelError
+from .forecast import ForecastInput
 from .mobile import MobileBridge, mount_mobile_routes, signature as phone_signature
 
 STATIC = Path(__file__).parent / 'static'
@@ -342,6 +343,18 @@ def create_app(data_dir=None):
     @app.get('/api/profile')
     def profile():
         return service.stats()
+    @app.post('/api/profile/forecast')
+    async def refresh_forecast(body: ForecastInput):
+        service.provider(body.provider_id)
+        if not service.stats()['graded_count']:
+            raise HTTPException(400,'请先完成至少一次有效批改')
+        if any(j['kind']=='forecast' and j['status'] in ('queued','running') for j in db.all('jobs')):
+            raise HTTPException(409,'预测正在更新，请等待完成，避免重复调用')
+        j=service.job('forecast')
+        j.update(provider_id=body.provider_id)
+        db.put('jobs',j['id'],j)
+        service.launch(service.update_forecast(j,body.provider_id))
+        return j
     @app.post('/api/profile/refresh')
     async def refresh(body: dict = Body(...)):
         service.provider(body.get('provider_id'))
@@ -352,7 +365,7 @@ def create_app(data_dir=None):
         return j
     @app.get('/api/export')
     def export():
-        return Response(dumps({'version':1,'exported_at':now(),'papers':db.all('papers'),'attempts':db.all('attempts'),'portrait':db.setting('portrait'),'highlights':[json.loads(r['data']) for r in db.rows('SELECT data FROM highlights ORDER BY rowid')],'phone_captures':[json.loads(r['data']) for r in db.rows('SELECT data FROM mobile_captures ORDER BY rowid')]}), media_type='application/json',headers={'Content-Disposition':'attachment; filename="shenlun-history.json"'})
+        return Response(dumps({'version':1,'exported_at':now(),'papers':db.all('papers'),'attempts':db.all('attempts'),'portrait':db.setting('portrait'),'forecast_report':db.setting('forecast_report'),'highlights':[json.loads(r['data']) for r in db.rows('SELECT data FROM highlights ORDER BY rowid')],'phone_captures':[json.loads(r['data']) for r in db.rows('SELECT data FROM mobile_captures ORDER BY rowid')]}), media_type='application/json',headers={'Content-Disposition':'attachment; filename="shenlun-history.json"'})
     app.mount('/static', StaticFiles(directory=STATIC), name='static')
     return app
 

@@ -31,6 +31,8 @@ PROSE='　　当地坚持“服务为先”，完善《惠企服务指南》，�
 counts={}
 received_contexts=[]
 received_reference_contexts=[]
+forecast_models=[]
+forecast_error_models=set()
 class MockModel(BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def do_POST(self):
@@ -105,6 +107,15 @@ class MockModel(BaseHTTPRequestHandler):
             assert 'reference_material_priority' not in payload['question']
             if payload['question']['kind']=='practical':assert payload['calibration']==PRACTICAL_CALIBRATION
             result=dict(analysis='模拟汇总：各模型独立批改已完成，建议加强材料要点的分类与表达。',consensus=['需要更加具体的材料支撑'],disagreements=['评分存在一定分差'],action_plan=[f'训练{i}：先列出要点，再用短句组织' for i in range(12)])
+        elif task.startswith('预测浙江省考'):
+            counts['forecast']=counts.get('forecast',0)+1;forecast_models.append(model)
+            assert payload['record_count']==3
+            assert all(payload['groups'][k]['n']==1 for k in ('summary','practical','essay'))
+            assert 'answer' not in payload and 'question' not in payload
+            time.sleep(.8)
+            if model in forecast_error_models:
+                self.send_response(503);self.end_headers();self.wfile.write(b'mock forecast unavailable');return
+            result=dict(scores=dict(summary=15,practical=22,essay=34),confidence='medium',analysis='近期作答框架较清楚，材料提炼仍有遗漏，预测需综合稳定性和论证表现，继续检验跨题迁移能力。')
         elif task.startswith('基于全部'):
             result=dict(analysis='模拟历史画像：已分析全部历史摘要，当前应加强材料运用与结构表达。'*50,strengths=['能够持续完成练习']*12,weaknesses=['要点提炼有待加强']*12,action_plan=[f'训练{i}：每天复盘一个遗漏要点' for i in range(12)])
         elif task.startswith('重写能力观察'):
@@ -541,7 +552,31 @@ def main():
                     assert context['materials']==expected['questions'][context['number']-1]['materials']
                 assert counts['coach-a']==3,counts
                 assert counts['coach-b']==4,counts
-                page.goto(base+'/#profile');expect(page.locator('.forecast-total')).to_contain_text('85',timeout=20000)
+                page.goto(base+'/#profile');expect(page.locator('.forecast-total')).to_contain_text('—',timeout=20000)
+                assert counts.get('forecast',0)==0
+                chosen_forecast=next(p for p in httpx.get(base+'/api/providers').json() if p['model']=='coach-b')
+                page.locator('#forecast-provider').select_option(chosen_forecast['id'])
+                page.locator('#forecast-refresh').click()
+                expect(page.locator('#forecast-refresh')).to_be_disabled()
+                expect(page.locator('.forecast-total')).to_contain_text('71',timeout=15000)
+                expect(page.locator('.forecast-analysis')).to_contain_text('材料提炼仍有遗漏')
+                assert forecast_models==['coach-b'] and counts['forecast']==1
+                saved_forecast=httpx.get(base+'/api/profile').json()['forecast_report']
+                assert saved_forecast['provider_id']==chosen_forecast['id'] and saved_forecast['history_count']==3
+                page.reload();expect(page.locator('#forecast-provider')).to_have_value(chosen_forecast['id'])
+                expect(page.locator('.forecast-total')).to_contain_text('71')
+                page.goto(base+'/#overview')
+                expect(page.locator('.stat').filter(has_text='浙江三题预估')).to_contain_text('71')
+                page.goto(base+'/#profile');page.wait_for_timeout(3000)
+                assert counts['forecast']==1
+                forecast_error_models.add('coach-b')
+                page.locator('#forecast-refresh').click()
+                expect(page.locator('#score-forecast')).to_contain_text('更新未完成',timeout=15000)
+                expect(page.locator('.forecast-total')).to_contain_text('71')
+                assert httpx.get(base+'/api/profile').json()['forecast_report']==saved_forecast
+                assert counts['forecast']==2 and forecast_models==['coach-b','coach-b']
+                forecast_error_models.clear()
+                page.locator('#score-forecast').screenshot(path='/tmp/shenlun-v33-forecast.png')
                 expect(page.get_by_role('heading',name='AI 的长期观察 · 要点',exact=True)).to_be_visible()
                 portrait=httpx.get(base+'/api/profile').json()['portrait']['result']
                 assert len(portrait['analysis'])<=60 and len(portrait['action_plan'])<=3
@@ -873,10 +908,18 @@ def main():
                 assert next(g for g in recovered['grades'] if g['provider_id']==object_coach['id'])==preserved
                 assert recovered['answer']=='加强建设，改善服务。'
                 assert counts['coach-disconnect']==2 and counts['coach-object']==1
+                # New grading and all background/profile/phone jobs leave the saved
+                # forecast frozen, until an explicit forecast button request.
+                final_profile=httpx.get(base+'/api/profile').json()
+                assert final_profile['estimated_total']==71 and final_profile['forecast_stale']
+                assert final_profile['forecast_report']==saved_forecast and counts['forecast']==2
+                page.goto(base+'/#profile')
+                expect(page.locator('#score-forecast')).to_contain_text('有新的练习记录')
+                expect(page.locator('.forecast-total')).to_contain_text('71')
                 assert not errors,errors
                 assert not page.evaluate('window.__csp'),page.evaluate('window.__csp')
                 browser.close()
-            print('PASS: GLM evidence objects preserve quote/analysis/deduction and usage in one call, actual HTTP POST disconnect is not automatically resent and targeted retry preserves the completed coach; paragraph wrapper cleanup preserves normal quotes/book titles and exact paper counts without extra requests, source-language repair once without regrading and historical version warning; nullable AI counters with exact program accounting and no spurious mismatch; Anhui B third-question 450-character/18-row sheet and stale 600 repair, whole overflow deletion, wrapped text-block/raw-newline/trailing-comma grading without extra calls; edited failed interface retry, deleted-interface replacement and master reassignment, master-only recovery without regrading, staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, 85/100 profile, mobile; no browser exceptions. Mock data isolated.')
+            print('PASS: chosen-model manual AI forecast is 71 rather than average sum, no forecast API on navigation/reload/grading/phone sync, failed refresh preserves snapshot and new grading marks stale; GLM evidence objects preserve quote/analysis/deduction and usage in one call, actual HTTP POST disconnect is not automatically resent and targeted retry preserves the completed coach; paragraph wrapper cleanup preserves normal quotes/book titles and exact paper counts without extra requests, source-language repair once without regrading and historical version warning; nullable AI counters with exact program accounting and no spurious mismatch; Anhui B third-question 450-character/18-row sheet and stale 600 repair, whole overflow deletion, wrapped text-block/raw-newline/trailing-comma grading without extra calls; edited failed interface retry, deleted-interface replacement and master reassignment, master-only recovery without regrading, staged API progress and clocks, truncation budget boost and targeted retry, legacy completed stages, persisted per-model timeout editing, single-coach retry/other-coach call preservation, question-first audit, three staggered coaches/in-flight poll tab race/unchanged paper DOM, always-visible reference paper at 1440/1280/390px, reselected highlight cancellation/persistence/multiple marks, hover navigation, fully visible square-cell paper at 1280×800/1440×900/1920×1080 incl 48-row essay, cross-column editing, 25-column paper/formatting/undo/paste/IME/overflow, plain-to-grid overflow drag/Shift selection/one-action selection/Backspace/undo incl Unicode and blank lines, reference-only re-generation/history, reader typography/preferences/focus/layout/draft retention at 390/1280/1920px, browser import, per-question material display, manual scope editing, actual HTTP model context filtering, three answers, draft reload, parallel grading, partial retry, history, manual AI profile, mobile; no browser exceptions. Mock data isolated.')
         finally:
             proc.terminate();proc.wait(timeout=10);mock.shutdown()
             if proc.returncode not in (0,-15):print(proc.stderr.read().decode(),file=sys.stderr)

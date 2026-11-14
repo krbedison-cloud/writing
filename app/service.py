@@ -16,6 +16,7 @@ from .grading_prompts import QUESTION_FIRST, GRADING_TASK, REFERENCE_FIELDS, REF
 from .portrait_summary import BRIEF_POLICY, NOTES_VERSION, readable_portrait, brief_points, rewrite_evidence
 from .output_validation import validation_message
 from .import_validation import FORMAT, normalize_import, import_errors
+from .forecast import ForecastResult, FORECAST_TASK, FORECAST_VERSION, forecast_evidence, forecast_signature
 
 GRADING_POLICY = 'question-first-v1'
 TASK_RUBRIC = '从本题题干和材料制定评分细则，区分内容要点、分析论证、结构表达及本题确需的文体格式；每项扣分必须说明它对应的题干要求、材料依据和用户原答证据。'
@@ -362,13 +363,17 @@ class Service:
         for name in DIMENSIONS:
             values = [statistics.mean(g['result']['dimensions'][name] for g in a['grades'] if g['status'] == 'completed') for a in valid]
             dims[name] = round(statistics.mean(values), 1) if values else None
-        forecast = {}
+        training_statistics = {}
         for kind, (label, full) in KINDS.items():
             rows = [a for a in valid if a['question_snapshot']['kind'] == kind]
             recent = rows[:5]
-            forecast[kind] = {'label':label, 'full_score':full, 'count':len(rows), 'recent_count':len(recent), 'score':round(statistics.mean(a['mean_score'] for a in recent), 1) if recent else None}
-        complete = all(f['score'] is not None for f in forecast.values())
-        total = round(sum(f['score'] for f in forecast.values()), 1) if complete else None
+            training_statistics[kind] = {'label':label, 'full_score':full, 'count':len(rows), 'recent_count':len(recent), 'score':round(statistics.mean(a['mean_score'] for a in recent), 1) if recent else None}
+        report=self.db.setting('forecast_report')
+        prediction=report['result']['scores'] if report else {}
+        forecast={kind:dict(label=label,full_score=full,count=training_statistics[kind]['count'],score=prediction.get(kind)) for kind,(label,full) in KINDS.items()}
+        total=round(sum(prediction.values()),2) if prediction and all(prediction.get(kind) is not None for kind in KINDS) else None
+        forecast_job=next((j for j in self.db.all('jobs') if j['kind']=='forecast'),None)
+        forecast_stale=bool(report and report['signature']!=forecast_signature(attempts))
         seen = set()
         for a in valid:
             seen.add((a['question_id'], hashlib.sha256(a['answer'].encode()).hexdigest()))
@@ -377,7 +382,28 @@ class Service:
         signature = hashlib.sha256(dumps([(a['id'], a['mean_score'], a.get('finished_at')) for a in valid]).encode()).hexdigest()
         portrait = self.db.setting('portrait')
         portrait_needs_refresh = bool(portrait and portrait.get('notes_version') != NOTES_VERSION)
-        return dict(total_attempts=len(attempts), graded_count=len(valid), paper_count=len(self.db.all('papers')), dimensions=dims, forecast=forecast, estimated_total=total, xp=xp, level=xp//100+1, level_progress=xp%100, timeline=timeline, signature=signature, portrait=portrait, portrait_needs_refresh=portrait_needs_refresh, portrait_stale=bool(portrait and portrait.get('signature') != signature), note='预估取各题型最近5次有效批改均分相加；六维分取全部有效作答的模型维度均分。重复练习、题目难度与模型偏差均会影响结果，不是官方成绩或排名。缺任一题型时不输出总分。')
+        return dict(total_attempts=len(attempts), graded_count=len(valid), paper_count=len(self.db.all('papers')), dimensions=dims, forecast=forecast, estimated_total=total, training_statistics=training_statistics, forecast_report=report, forecast_stale=forecast_stale, forecast_job=forecast_job, xp=xp, level=xp//100+1, level_progress=xp%100, timeline=timeline, signature=signature, portrait=portrait, portrait_needs_refresh=portrait_needs_refresh, portrait_stale=bool(portrait and portrait.get('signature') != signature), note='预估由所选模型分析历次评分、能力变化与诊断摘要后给出，仅点击更新时调用API；六维分仍取全部有效作答的模型维度均分。预测不是官方成绩或排名；缺少题型证据时不硬估总分。')
+    async def update_forecast(self,j,provider_id):
+        try:
+            self.stage(j,'正在汇总历次评分与写作能力摘要')
+            attempts=self.db.all('attempts')
+            evidence=forecast_evidence(attempts)
+            if not evidence['record_count']:raise ModelError('请先完成至少一次有效批改')
+            signature=forecast_signature(attempts)
+            provider=self.provider(provider_id)
+            self.stage(j,'正在由所选模型分析趋势、稳定性与能力表现')
+            raw=await self.ask(provider,FORECAST_TASK,evidence)
+            result=ForecastResult.model_validate(raw).model_dump()
+            for kind in KINDS:
+                if not evidence['groups'][kind]['n'] and result['scores'][kind] is not None:
+                    raise ModelError('模型为未练习题型给出了缺少依据的分数，请重新更新')
+            saved=dict(version=FORECAST_VERSION,result=result,signature=signature,provider_id=provider_id,name=provider['name'],model=provider['model'],
+                       updated_at=now(),history_count=evidence['record_count'],counts={kind:evidence['groups'][kind]['n'] for kind in KINDS})
+            if getattr(raw,'usage',None):saved['usage']=raw.usage
+            self.db.setting('forecast_report',saved)
+            self.finish(j)
+        except Exception as exc:self.finish(j,public_error(exc))
+
     async def portrait(self, j, provider_id):
         async with self.profile_lock:
             try:
@@ -421,7 +447,7 @@ class Service:
                     if len(dumps(reduced)) >= len(dumps(evidence)):
                         raise ModelError('历史分块摘要过长，无法继续压缩；数值统计已更新，请换用能遵循长度要求的主模型')
                     evidence, compressed = reduced, True
-                raw = await self.ask(provider, '基于全部历史证据生成简短能力观察，'+BRIEF_POLICY+'返回 {analysis,strengths,weaknesses,action_plan}。只选最重要的一两项能力变化和下一步动作，不逐维解释、不逐题复盘。缺失题型不推断，不虚构排名或考试分数。所有有效练习都包含在历史摘要中，仅依据提供的证据判断。', {'statistics':{'dimensions':stats['dimensions'], 'forecast':stats['forecast']}, 'all_history':evidence, 'history_is_compressed':compressed, 'record_count':len(history)})
+                raw = await self.ask(provider, '基于全部历史证据生成简短能力观察，'+BRIEF_POLICY+'返回 {analysis,strengths,weaknesses,action_plan}。只选最重要的一两项能力变化和下一步动作，不逐维解释、不逐题复盘。缺失题型不推断，不虚构排名或考试分数。所有有效练习都包含在历史摘要中，仅依据提供的证据判断。', {'statistics':{'dimensions':stats['dimensions'], 'forecast':stats['training_statistics']}, 'all_history':evidence, 'history_is_compressed':compressed, 'record_count':len(history)})
                 try:
                     result = readable_portrait(raw)
                 except ValidationError:

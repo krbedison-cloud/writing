@@ -730,7 +730,8 @@ class AppTests(unittest.TestCase):
         self.assertEqual(a['answer'],'加强基础建设，推动绿色创新与产业发展。')
         self.assertIsNone(self.client.get('/api/profile').json()['estimated_total'])
         self.submit(p,1);self.submit(p,2)
-        s=self.client.get('/api/profile').json();self.assertEqual(s['estimated_total'],87)
+        s=self.client.get('/api/profile').json();self.assertIsNone(s['estimated_total'])
+        self.assertEqual(sum(row['score'] for row in s['training_statistics'].values()),87)
         self.assertEqual(s['graded_count'],3);self.assertEqual(s['xp'],75)
         self.assertEqual(s['dimensions']['审题立意'],70)
         # Repeated exact answer contributes to statistics but cannot farm XP.
