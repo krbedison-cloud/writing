@@ -1,0 +1,5 @@
+# Surge RULE-SET: DeepSeek official services (DIRECT)
+# Updated: 2026-11-17
+# Assign DIRECT to this entire set, above general proxy rules.
+# Covers official web, API, platform, docs, CDN and other subdomains.
+DOMAIN-SUFFIX,deepseek.com
