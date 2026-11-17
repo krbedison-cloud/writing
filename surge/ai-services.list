@@ -1,5 +1,6 @@
 # Surge remote RULE-SET: AI services, conservative fixed egress
-# Updated: 2026-11-03
+# Updated: 2026-11-17
+# DeepSeek moved to surge/deepseek-direct.list; assign that set DIRECT.
 # Only rule matchers here; no policy on individual lines.
 # Subscription: RULE-SET,https://raw.githubusercontent.com/krbedison-cloud/writing/main/surge/ai-services.list,AI-Fixed
 # AI-Fixed must be a manually selected proxy group, not Smart/fallback.
@@ -58,7 +59,6 @@ DOMAIN-SUFFIX,pplx.ai
 
 # AI APIs and platforms
 DOMAIN-SUFFIX,openrouter.ai
-DOMAIN-SUFFIX,deepseek.com
 DOMAIN-SUFFIX,poe.com
 DOMAIN-SUFFIX,character.ai
 DOMAIN-SUFFIX,huggingface.co
